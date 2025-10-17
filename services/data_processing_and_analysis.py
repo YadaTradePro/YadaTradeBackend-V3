@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # services/data_processing_and_analysis.py
-# مسئول اجرای تحلیل‌های تکنیکال و الگوی کندل و ذخیره نتایج در DB
+# مسئول اجرای تحلیل‌های تکنیکال، الگوی کندل و تحلیل فاندامنتال (جریان سرمایه) و ذخیره نتایج در DB
 from typing import List, Optional, Tuple, Any
 from datetime import datetime
 import jdatetime
@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 
 # فرض بر این است که این مدل‌ها در فایل models.py و توابع کمکی در utils.py موجود هستند.
 from extensions import db
-from models import HistoricalData, ComprehensiveSymbolData, TechnicalIndicatorData, CandlestickPatternDetection
+# 💡 تغییر 1: اضافه کردن FundamentalData به Imports
+from models import HistoricalData, ComprehensiveSymbolData, TechnicalIndicatorData, CandlestickPatternDetection, FundamentalData
 from services.technical_analysis_utils import (
     calculate_stochastic, 
     calculate_squeeze_momentum, 
@@ -46,7 +47,7 @@ def to_jdate(dt: datetime) -> str:
     return jdatetime.date.fromgregorian(date=dt.date()).strftime("%Y-%m-%d")
 
 # ----------------------------------------------------
-# Core processing: Technical & Pattern Analysis (منطق اصلی تحلیل)
+# Core processing: Technical & Pattern & Fundamental Analysis (منطق اصلی تحلیل)
 # ----------------------------------------------------
 
 def run_technical_analysis(
@@ -56,8 +57,8 @@ def run_technical_analysis(
     days_limit: Optional[int] = None
 ) -> Tuple[int, str]:
     """
-    اجرای محاسبات اندیکاتورهای تکنیکال و تشخیص الگوهای کندل بر روی داده‌های تاریخی.
-    نتایج در TechnicalIndicatorData و CandlestickPatternDetection ذخیره می‌شوند.
+    اجرای محاسبات اندیکاتورهای تکنیکال، تشخیص الگوهای کندل و تحلیل فاندامنتال (جریان سرمایه) بر روی داده‌های تاریخی.
+    نتایج در TechnicalIndicatorData، CandlestickPatternDetection و FundamentalData ذخیره می‌شوند.
     """
     processed_symbols = 0
     indicator_count = 0
@@ -85,7 +86,7 @@ def run_technical_analysis(
         if not symbols:
             return 0, "No symbols with historical data found for analysis."
 
-        logger.info(f"Starting technical analysis for {len(symbols)} symbols.")
+        logger.info(f"Starting comprehensive daily analysis for {len(symbols)} symbols.") # تغییر متن لاگ
 
     except Exception as e:
         logger.error(f"Error fetching symbols for analysis: {e}")
@@ -96,7 +97,7 @@ def run_technical_analysis(
     # 2. حلقه‌ی اصلی پردازش و تحلیل
     for sym in symbols:
         try:
-            # الف) واکشی داده‌های تاریخی مورد نیاز (OHLCV)
+            # الف) واکشی داده‌های تاریخی مورد نیاز (OHLCV + Fundamental Inputs)
             historical_data = db_session.query(HistoricalData).filter(
                 HistoricalData.symbol_id == sym.symbol_id
             ).order_by(HistoricalData.date.asc()).all()
@@ -105,7 +106,7 @@ def run_technical_analysis(
                 logger.info(f"Skipping {sym.symbol_name}: No historical data.")
                 continue
 
-            # تبدیل به DataFrame
+            # 💡 تغییر 2: تبدیل به DataFrame با افزودن ستون‌های جریان سرمایه و قیمت نهایی
             df_data = [{
                 'date': h.date,
                 'jdate': h.jdate,
@@ -113,16 +114,25 @@ def run_technical_analysis(
                 'high_price': h.high,
                 'low_price': h.low,
                 'close_price': h.close,
-                'volume': h.volume
+                'final_price': h.final, # <-- جدید: قیمت نهایی برای نقدینگی
+                'volume': h.volume,
+                # --- داده‌های جریان سرمایه برای تحلیل فاندامنتال ---
+                'buy_count_i': h.buy_count_i,
+                'sell_count_i': h.sell_count_i,
+                'buy_i_volume': h.buy_i_volume,
+                'sell_i_volume': h.sell_i_volume,
+                # ----------------------------------------------------
             } for h in historical_data]
 
             df = pd.DataFrame(df_data)
             
-            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'volume']:
+            # 💡 تغییر 2: افزودن ستون‌های جدید به حلقه تبدیل نوع
+            for col in ['open_price', 'high_price', 'low_price', 'close_price', 'final_price', 'volume', 
+                        'buy_count_i', 'sell_count_i', 'buy_i_volume', 'sell_i_volume']: 
                 df[col] = pd.to_numeric(df[col], errors='coerce')
                 
             if days_limit and days_limit > 0:
-                 df = df.iloc[-days_limit:]
+                df = df.iloc[-days_limit:]
             
             # --- ب) محاسبه اندیکاتورهای تکنیکال استاندارد (با ta) ---
             
@@ -161,11 +171,27 @@ def run_technical_analysis(
             df['resistance_level_50d'], df['resistance_broken'] = calculate_support_resistance_break(df, window=50)
 
             
-            # --- د) تشخیص الگوهای کندل ---
+            # 💡 تغییر 3: اضافه کردن محاسبه معیارهای فاندامنتال/جریان سرمایه
+            # --- د) محاسبه معیارهای فاندامنتال/جریان سرمایه ---
+            
+            # 1. Real Power Ratio (نسبت قدرت خریدار حقیقی به فروشنده حقیقی)
+            # جلوگیری از تقسیم بر صفر با استفاده از replace
+            buyer_power = df['buy_i_volume'] / df['buy_count_i'].replace(0, np.nan)
+            seller_power = df['sell_i_volume'] / df['sell_count_i'].replace(0, np.nan)
+            df['Real_Power_Ratio'] = buyer_power / seller_power
+            
+            # 2. Volume Ratio 20d (نسبت حجم امروز به میانگین ۲۰ روزه)
+            df['Volume_Ratio_20d'] = df['volume'] / df['Volume_MA_20']
+            
+            # 3. Daily Liquidity (نقدینگی روزانه)
+            df['Daily_Liquidity'] = df['final_price'] * df['volume']
+
+
+            # --- ه) تشخیص الگوهای کندل --- 
             patterns_detected = check_candlestick_patterns(df.copy()) # خروجی: لیست از (jdate, pattern_name)
             
             
-            # --- ه) آماده‌سازی و ذخیره‌سازی Technical Indicator (با Merge برای Upsert) ---
+            # --- و) آماده‌سازی و ذخیره‌سازی Technical Indicator (با Merge برای Upsert) ---
             
             df = df.replace([np.inf, -np.inf], None)
             
@@ -195,7 +221,7 @@ def run_technical_analysis(
                 db_session.merge(indicator_data) 
                 indicator_count += 1 
 
-            # --- و) ذخیره Candlestick Patterns (با Merge برای Upsert) ---
+            # --- ز) ذخیره Candlestick Patterns (با Merge برای Upsert) ---
             
             for jdate, pattern_name in patterns_detected:
                 pattern_obj = CandlestickPatternDetection(
@@ -206,10 +232,35 @@ def run_technical_analysis(
                 db_session.merge(pattern_obj)
                 pattern_count += 1
 
+            # 💡 تغییر 4: اضافه کردن منطق ذخیره‌سازی نتایج فاندامنتال
+            # --- ح) ذخیره Fundamental Metrics (با Merge برای Upsert) ---
+            # فقط آخرین روز (روز جاری) را برای فاندامنتال ذخیره می‌کنیم
+            last_row = df.iloc[-1]
             
+            # اطمینان از اینکه داده‌های مورد نیاز برای روز جاری موجود باشد
+            if pd.notna(last_row.get('jdate')):
+                
+                real_power_ratio = float(last_row['Real_Power_Ratio']) if pd.notna(last_row.get('Real_Power_Ratio')) else None
+                volume_ratio_20d = float(last_row['Volume_Ratio_20d']) if pd.notna(last_row.get('Volume_Ratio_20d')) else None
+                daily_liquidity = float(last_row['Daily_Liquidity']) if pd.notna(last_row.get('Daily_Liquidity')) else None
+                
+                # تنها در صورتی رکورد را درج/به‌روزرسانی می‌کنیم که حداقل یکی از معیارها محاسبه شده باشد
+                if real_power_ratio is not None or volume_ratio_20d is not None:
+                    fundamental_data = FundamentalData(
+                        symbol_id=sym.symbol_id,
+                        jdate=last_row['jdate'],
+                        # فرض بر این است که ستون 'date' در DataFrame یک شیء datetime یا Timestamp است
+                        date=last_row['date'], 
+                        real_power_ratio=real_power_ratio,
+                        volume_ratio_20d=volume_ratio_20d,
+                        daily_liquidity=daily_liquidity,
+                    )
+                    db_session.merge(fundamental_data)
+
+
             db_session.commit()
             processed_symbols += 1
-            logger.info(f"Successfully analyzed {sym.symbol_name}. Indicators: {len(df)}, Patterns: {len(patterns_detected)}")
+            logger.info(f"Successfully analyzed {sym.symbol_name}. Indicators: {len(df)}, Patterns: {len(patterns_detected)}. Fundamental Updated: {last_row.get('jdate')}")
 
         except Exception as e:
             logger.error(f"Critical error during technical analysis for {sym.symbol_name}: {e}", exc_info=True)
