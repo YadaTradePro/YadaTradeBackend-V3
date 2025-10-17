@@ -187,33 +187,56 @@ def _get_close_series_from_hist_df(hist_df):
 # --- NEW: Market Sentiment Analysis Function ---
 def _get_market_sentiment() -> str:
     """
-    Determines short-term market sentiment based on the daily change of major indices.
+    Determines short-term market sentiment based on the average daily change of major indices over the last 3 trading days.
+    Uses data from DailyIndexData table.
     Returns: 'Bullish', 'Neutral', or 'Bearish'.
     """
     try:
-        indices_data = fetch_iran_market_indices()
-        total_index = indices_data.get("Total_Index", {})
-        equal_weighted_index = indices_data.get("Equal_Weighted_Index", {})
+        # Get last 3 distinct jdates
+        last_jdates_query = db.session.query(DailyIndexData.jdate).distinct().order_by(DailyIndexData.jdate.desc()).limit(3).all()
+        if not last_jdates_query:
+            logger.warning("No index data available, defaulting to Neutral")
+            return "Neutral"
 
-        total_percent = total_index.get("percent", 0) or 0
-        equal_percent = equal_weighted_index.get("percent", 0) or 0
+        last_jdates = [row[0] for row in last_jdates_query]
 
-        if total_percent > 0.3 and equal_percent > 0.3:
-            logger.info(f"Market Sentiment: Bullish (Total: {total_percent}%, Equal: {equal_percent}%)")
+        # Fetch data for these dates and types
+        index_data = db.session.query(DailyIndexData).filter(
+            DailyIndexData.jdate.in_(last_jdates),
+            DailyIndexData.index_type.in_(['Total_Index', 'Equal_Weighted_Index'])
+        ).all()
+
+        if len(index_data) < 2:  # At least one per index
+            logger.warning("Insufficient index data for both types, defaulting to Neutral")
+            return "Neutral"
+
+        # Group by index_type
+        total_changes = [d.percent_change for d in index_data if d.index_type == 'Total_Index']
+        equal_changes = [d.percent_change for d in index_data if d.index_type == 'Equal_Weighted_Index']
+
+        if len(total_changes) < 1 or len(equal_changes) < 1:
+            logger.warning("Missing data for one index type, defaulting to Neutral")
+            return "Neutral"
+
+        avg_total = np.mean(total_changes)
+        avg_equal = np.mean(equal_changes)
+
+        logger.info(f"Market Sentiment Averages over last {len(last_jdates)} days: Total {avg_total:.2f}%, Equal {avg_equal:.2f}%")
+
+        if avg_total > 0.3 and avg_equal > 0.3:
+            logger.info(f"Market Sentiment: Bullish (Total: {avg_total:.2f}%, Equal: {avg_equal:.2f}%)")
             return "Bullish"
-        elif total_percent < -0.3 and equal_percent < -0.3:
-            logger.info(f"Market Sentiment: Bearish (Total: {total_percent}%, Equal: {equal_percent}%)")
+        elif avg_total < -0.3 and avg_equal < -0.3:
+            logger.info(f"Market Sentiment: Bearish (Total: {avg_total:.2f}%, Equal: {avg_equal:.2f}%)")
             return "Bearish"
         else:
-            logger.info(f"Market Sentiment: Neutral (Total: {total_percent}%, Equal: {equal_percent}%)")
+            logger.info(f"Market Sentiment: Neutral (Total: {avg_total:.2f}%, Equal: {avg_equal:.2f}%)")
             return "Neutral"
     except Exception as e:
-        logger.error(f"Could not fetch market sentiment, defaulting to Neutral: {e}")
+        logger.error(f"Error fetching market sentiment from DB: {e}, defaulting to Neutral")
         return "Neutral"
 
-# 
 # --- REVISED: Filter Functions ---
-
 def _check_market_condition_filters(hist_df, tech_df):
     """
     Checks for individual stock conditions like overbought state or consolidation.
@@ -709,148 +732,126 @@ def _check_static_levels_filters(technical_rec, last_close_val):
 
     return satisfied_filters, reason_parts
 # --- END NEW STRATEGIC FILTERS --- 
-
 def run_weekly_watchlist_selection():
-    """ 
-    Selects symbols for the weekly watchlist using a bulk data fetching and processing approach, 
-    incorporating a dynamic score threshold and advanced strategic filters.
     """
-    logger.info("Starting Weekly Watchlist selection process.")
+    انتخاب نمادها برای واچ‌لیست هفتگی با استفاده از داده‌های حجیم،
+    امتیازدهی دینامیک و فیلترهای پیشرفته استراتژیک.
+    """
+    from models import (
+        ComprehensiveSymbolData,
+        HistoricalData,
+        TechnicalIndicatorData,
+        FundamentalData,
+        CandlestickPatternDetection,
+        MLPrediction,
+        WeeklyWatchlistResult,
+        FinancialRatiosData
+    )
+    from sqlalchemy import func
+    import pandas as pd
+    import jdatetime
+    import uuid
+    from datetime import datetime, timedelta, date
+    import json
 
-    # Step 1: Determine market sentiment and leading sectors 
+    logger.info("🚀 Starting Weekly Watchlist selection process...")
+
+    # Step 1: Determine market sentiment and leading sectors
     market_sentiment = _get_market_sentiment()
-    leading_sectors = _get_leading_sectors() # NEW
-    
+    leading_sectors = _get_leading_sectors()
+
     if market_sentiment == "Bullish":
         score_threshold = 7
     elif market_sentiment == "Neutral":
         score_threshold = 8
-    else: # Bearish
+    else:
         score_threshold = 10
-        
-    logger.info(f"Market sentiment is '{market_sentiment}'. Score threshold set to >= {score_threshold}.")
-    logger.info(f"Identified leading sectors: {leading_sectors}")
+
+    logger.info(f"📈 Market sentiment: {market_sentiment}, Score threshold: >= {score_threshold}")
+    logger.info(f"🏭 Leading sectors identified: {leading_sectors}")
 
     # Step 2: Bulk Data Fetching
-    allowed_market_types = ['بورس', 'فرابورس', 'پایه فرابورس', 'بورس کالا', 'اوراق'] 
-    
-    # 2.1 Get the list of all active symbols
+    allowed_market_types = ['بورس', 'فرابورس', 'پایه فرابورس', 'بورس کالا', 'بورس انرژی']
+
+    # Fetch active symbols
     symbols_to_analyze = ComprehensiveSymbolData.query.filter(
-        ComprehensiveSymbolData.is_active == True,
         ComprehensiveSymbolData.market_type.in_(allowed_market_types)
     ).all()
-    
+
+    if not symbols_to_analyze:
+        logger.warning("⚠️ No symbols found for analysis.")
+        return False, "No active symbols available for analysis."
+
     symbol_ids = [s.symbol_id for s in symbols_to_analyze]
-    logger.info(f"Found {len(symbol_ids)} active symbols to analyze.")
+    logger.info(f"🧩 Found {len(symbol_ids)} active symbols for analysis.")
 
-    # 2.2 Bulk fetch historical data (last N days)
-    # This process is heavy, optimizing query to only include required columns
-    columns_to_fetch_hist = [
-        HistoricalData.symbol_id, HistoricalData.jdate, HistoricalData.close_price, HistoricalData.final, 
-        HistoricalData.open_price, HistoricalData.high_price, HistoricalData.low_price, HistoricalData.volume,
-        HistoricalData.buy_i_volume, HistoricalData.buy_count_i, HistoricalData.sell_i_volume, 
-        HistoricalData.sell_count_i
-    ]
-    
-    # Calculate the lookback start date in Jalali
+    # Calculate lookback date
     today_greg = datetime.now().date()
-    lookback_greg = today_greg - timedelta(days=TECHNICAL_DATA_LOOKBACK_DAYS * 2) # Use a larger window to ensure enough data
+    lookback_greg = today_greg - timedelta(days=TECHNICAL_DATA_LOOKBACK_DAYS * 2)
     lookback_jdate_str = convert_gregorian_to_jalali(lookback_greg)
-
     if not lookback_jdate_str:
-        logger.error("Could not determine lookback date. Aborting.")
-        return []
+        logger.error("❌ Could not determine lookback date. Aborting.")
+        return False, "Failed to calculate lookback date."
 
-    hist_data = db.session.query(*columns_to_fetch_hist)\
-        .filter(HistoricalData.symbol_id.in_(symbol_ids), HistoricalData.jdate >= lookback_jdate_str)\
-        .order_by(HistoricalData.jdate).all()
-    
-    hist_df = pd.DataFrame(hist_data, columns=[c.name for c in columns_to_fetch_hist])
-    logger.info(f"Fetched {len(hist_df)} historical records starting from {lookback_jdate_str}.")
+    # Fetch Historical Data
+    hist_records = HistoricalData.query.filter(
+        HistoricalData.symbol_id.in_(symbol_ids),
+        HistoricalData.jdate >= lookback_jdate_str
+    ).all()
+    hist_df = pd.DataFrame([h.__dict__ for h in hist_records]).drop(columns=['_sa_instance_state'], errors='ignore')
 
-    # 2.3 Bulk fetch technical data
-    columns_to_fetch_tech = [
-        TechnicalIndicatorData.symbol_id, TechnicalIndicatorData.jdate, TechnicalIndicatorData.RSI, 
-        TechnicalIndicatorData.RSI_Divergence, TechnicalIndicatorData.MACD, TechnicalIndicatorData.MACD_Signal,
-        TechnicalIndicatorData.Stochastic_K, TechnicalIndicatorData.Stochastic_D, TechnicalIndicatorData.SMA_50, 
-        TechnicalIndicatorData.ATR, TechnicalIndicatorData.Bollinger_Low, TechnicalIndicatorData.Volume_MA_20,
-        TechnicalIndicatorData.halftrend_signal, TechnicalIndicatorData.squeeze_on,
-        TechnicalIndicatorData.resistance_broken, TechnicalIndicatorData.resistance_level_50d,
-        TechnicalIndicatorData.static_support_level, TechnicalIndicatorData.static_resistance_level
-    ]
-    
-    tech_data = db.session.query(*columns_to_fetch_tech)\
-        .filter(TechnicalIndicatorData.symbol_id.in_(symbol_ids), TechnicalIndicatorData.jdate >= lookback_jdate_str)\
-        .order_by(TechnicalIndicatorData.jdate).all()
-        
-    tech_df = pd.DataFrame(tech_data, columns=[c.name for c in columns_to_fetch_tech])
-    logger.info(f"Fetched {len(tech_df)} technical records.")
+    # Fetch Technical Data
+    tech_records = TechnicalIndicatorData.query.filter(
+        TechnicalIndicatorData.symbol_id.in_(symbol_ids),
+        TechnicalIndicatorData.jdate >= lookback_jdate_str
+    ).all()
+    tech_df = pd.DataFrame([t.__dict__ for t in tech_records]).drop(columns=['_sa_instance_state'], errors='ignore')
 
-    # 2.4 Bulk fetch fundamental data (latest record for each symbol)
-    subquery = db.session.query(
-        FundamentalData.symbol_id,
-        func.max(FundamentalData.fiscal_year).label('max_year')
-    ).filter(FundamentalData.symbol_id.in_(symbol_ids)).group_by(FundamentalData.symbol_id).subquery()
-    
-    fundamental_records = db.session.query(FundamentalData)\
-        .join(subquery, (FundamentalData.symbol_id == subquery.c.symbol_id) & (FundamentalData.fiscal_year == subquery.c.max_year))\
-        .all()
-    logger.info(f"Fetched {len(fundamental_records)} latest fundamental records.")
+    # Fetch Fundamental Data
+    fundamental_records = FundamentalData.query.filter(
+        FundamentalData.symbol_id.in_(symbol_ids)
+    ).all()
 
-    # 2.5 Bulk fetch candlestick patterns (latest record for each symbol)
-    candlestick_records = db.session.query(CandlestickPatternDetection)\
-        .filter(CandlestickPatternDetection.symbol_id.in_(symbol_ids))\
-        .order_by(CandlestickPatternDetection.jdate.desc())\
-        .distinct(CandlestickPatternDetection.symbol_id).all()
-    logger.info(f"Fetched {len(candlestick_records)} latest candlestick pattern records.")
-    
-    # 2.6 Bulk fetch ML Predictions
-    ml_predictions = db.session.query(MLPrediction)\
-        .filter(MLPrediction.symbol_id.in_(symbol_ids))\
-        .order_by(MLPrediction.jdate.desc())\
-        .distinct(MLPrediction.symbol_id).all()
-    logger.info(f"Fetched {len(ml_predictions)} latest ML predictions.")
-    
-    # Financial Ratios Data (original code fetching this)
-    # The original file was fetching this data. We keep the fetch part for safety but deprecate its use in the loop.
-    # financial_ratios_data = db.session.query(FinancialRatiosData)\
-    #     .filter(FinancialRatiosData.symbol_id.in_(symbol_ids)).all()
-    # financial_ratios_df = pd.DataFrame([r.__dict__ for r in financial_ratios_data]) if financial_ratios_data else pd.DataFrame()
+    # Fetch Candlestick Patterns
+    today_jdate = get_today_jdate_str()
+    candlestick_records = CandlestickPatternDetection.query.filter(
+        CandlestickPatternDetection.symbol_id.in_(symbol_ids),
+        CandlestickPatternDetection.jdate == today_jdate
+    ).all()
 
+    # Fetch ML Predictions
+    ml_predictions = MLPrediction.query.filter(
+        MLPrediction.symbol_id.in_(symbol_ids),
+        MLPrediction.jprediction_date == today_jdate,
+        MLPrediction.predicted_trend == 'Uptrend'
+    ).all()
 
-    # Step 3: Group data for efficient processing
+    # Grouping Data
     hist_groups = {k: v.sort_values(by='jdate') for k, v in hist_df.groupby("symbol_id")} if not hist_df.empty else {}
     tech_groups = {k: v.sort_values(by='jdate') for k, v in tech_df.groupby("symbol_id")} if not tech_df.empty else {}
     fundamental_map = {rec.symbol_id: rec for rec in fundamental_records}
     candlestick_map = {rec.symbol_id: rec for rec in candlestick_records}
     ml_prediction_set = {rec.symbol_id for rec in ml_predictions}
-    # financial_ratios_groups = {k: v for k, v in financial_ratios_df.groupby("symbol_id")} if not financial_ratios_df.empty else {}
-    # ✅ REMOVED: financial_ratios_groups is no longer needed; advanced ratios are calculated based on hist/tech data.
-    
-    # Step 4: Process each symbol and score it
+
+    logger.info("📊 Data grouping completed. Beginning scoring and selection...")
+
+    # Step 3: Scoring
     watchlist_candidates = []
-    
-    # Create a map for symbol data to easily retrieve sector
-    symbol_data_map = {s.symbol_id: s for s in symbols_to_analyze}
-    
     for symbol in symbols_to_analyze:
         symbol_hist_df = hist_groups.get(symbol.symbol_id, pd.DataFrame()).copy()
         symbol_tech_df = tech_groups.get(symbol.symbol_id, pd.DataFrame()).copy()
 
         if len(symbol_hist_df) < MIN_REQUIRED_HISTORY_DAYS:
             continue
-        
+
         last_close_series = _get_close_series_from_hist_df(symbol_hist_df)
         entry_price = float(last_close_series.iloc[-1]) if not last_close_series.empty else None
-        
         if entry_price is None or pd.isna(entry_price):
-            logger.warning(f"Skipping {symbol.symbol_name} due to missing entry price.")
             continue
-            
+
         all_satisfied_filters = []
         all_reason_parts = {}
 
-        # Run all filter checks
         def run_check(check_func, *args):
             filters, reasons = check_func(*args)
             all_satisfied_filters.extend(filters)
@@ -859,131 +860,152 @@ def run_weekly_watchlist_selection():
         technical_rec = symbol_tech_df.iloc[-1] if not symbol_tech_df.empty else None
         fundamental_rec = fundamental_map.get(symbol.symbol_id)
         pattern_rec = candlestick_map.get(symbol.symbol_id)
-        # symbol_ratios_df = financial_ratios_groups.get(symbol.symbol_id) # DELETED: Not used anymore
-        
-        # Sector filter check
-        run_check(_check_sector_strength_filter, symbol.sector_name, leading_sectors)
 
-        # Technical/Price filters
+        # Run Filters
+        run_check(_check_sector_strength_filter, getattr(symbol, 'sector_name', ''), leading_sectors)
         run_check(_check_technical_filters, symbol_hist_df, symbol_tech_df)
         run_check(_check_market_condition_filters, symbol_hist_df, symbol_tech_df)
         run_check(_check_static_levels_filters, technical_rec, entry_price)
-
-        # Fundamental filters (P/E, P/S, EPS)
-        run_check(_check_fundamental_filters, fundamental_rec) 
-
-        # Advanced Flow/Ratio Filters (Replaces old _check_advanced_fundamental_filters) ✅ UPDATED CALL
-        run_check(_check_money_flow_and_advanced_ratios, symbol_hist_df, symbol_tech_df) 
-
-        # Money Flow/Thrust filters (Pol-e Hooshmand)
+        run_check(_check_fundamental_filters, fundamental_rec)
+        run_check(_check_money_flow_and_advanced_ratios, symbol_hist_df, symbol_tech_df)
         run_check(_check_smart_money_filters, symbol_hist_df)
         run_check(_check_power_thrust_signal, symbol_hist_df, last_close_series)
-        
-        # Candlestick filters
         run_check(_check_candlestick_filters, pattern_rec)
-        
-        # ML filter (Optional)
+
+        # ML Filter
         if symbol.symbol_id in ml_prediction_set:
             all_satisfied_filters.append("ML_Predicts_Uptrend")
-            all_reason_parts["ml_prediction"] = ["ML model predicts a positive short-term trend."]
-        
-        # Step 5: Calculate Final Score
-        final_score = 0
-        satisfied_filters_with_weights = {}
-        for filter_name in all_satisfied_filters:
-            weight = FILTER_WEIGHTS.get(filter_name, {}).get("weight", 0)
-            final_score += weight
-            satisfied_filters_with_weights[filter_name] = weight
-            
-        # Step 6: Filter based on threshold
-        if final_score >= score_threshold:
-            # Construct Reason String
-            reason_parts_list = []
-            for category, reasons in all_reason_parts.items():
-                if reasons and isinstance(reasons, list):
-                    reason_parts_list.extend(reasons)
+            all_reason_parts.setdefault("ml_signal", []).append("ML model predicts a high-probability uptrend.")
 
-            # Convert satisfied filters to a readable string (including weights)
-            sorted_filters = sorted(satisfied_filters_with_weights.items(), key=lambda item: item[1], reverse=True)
-            filter_details = "; ".join([f"{name} ({weight:+d})" for name, weight in sorted_filters])
-            
-            # Combine all for the final reason
-            final_reason_text = f"Score: {final_score:.1f}. Filters: {filter_details}. Details: " + " | ".join(reason_parts_list)
+        # Calculate Weighted Score
+        score = sum(FILTER_WEIGHTS.get(f, {}).get('weight', 0) for f in all_satisfied_filters)
 
+        if score >= score_threshold:
+            watchlist_candidates.append({
+                "symbol_id": symbol.symbol_id,
+                "symbol_name": symbol.symbol_name,
+                "entry_price": entry_price,
+                "entry_date": date.today(),
+                "jentry_date": today_jdate,
+                "outlook": "Bullish",
+                "reason_json": json.dumps(all_reason_parts, ensure_ascii=False),
+                "satisfied_filters": json.dumps(list(set(all_satisfied_filters)), ensure_ascii=False),
+                "score": score
+            })
 
-            # Step 7: Finalize candidate
-            watchlist_candidates.append(WeeklyWatchlistResult(
+    logger.info(f"✅ {len(watchlist_candidates)} symbols passed the threshold ({score_threshold}). Saving top 8...")
+
+    # Step 4: Save results
+    watchlist_candidates.sort(key=lambda x: x['score'], reverse=True)
+    final_watchlist = watchlist_candidates[:8]
+
+    saved_count = 0
+    for candidate in final_watchlist:
+        existing_result = WeeklyWatchlistResult.query.filter_by(
+            symbol_id=candidate['symbol_id'], jentry_date=candidate['jentry_date']
+        ).first()
+
+        if existing_result:
+            existing_result.entry_price = candidate['entry_price']
+            existing_result.outlook = candidate['outlook']
+            existing_result.reason = candidate['satisfied_filters']
+            existing_result.probability_percent = min(100, candidate['score'] * 4)
+            existing_result.created_at = datetime.now()
+        else:
+            existing_result = WeeklyWatchlistResult(
                 signal_unique_id=str(uuid.uuid4()),
-                symbol_id=symbol.symbol_id,
-                symbol_name=symbol.symbol_name,
-                outlook="Bullish",
-                reason=final_reason_text,
-                entry_price=entry_price,
-                jentry_date=get_today_jdate_str(),
-                status="Active",
-                score=final_score
-            ))
+                symbol_id=candidate['symbol_id'],
+                symbol_name=candidate['symbol_name'],
+                entry_price=candidate['entry_price'],
+                entry_date=candidate['entry_date'],
+                jentry_date=candidate['jentry_date'],
+                outlook=candidate['outlook'],
+                reason=candidate['satisfied_filters'],
+                probability_percent=min(100, candidate['score'] * 4),
+                status='active',
+            )
+        db.session.add(existing_result)
+        saved_count += 1
 
-    logger.info(f"Watchlist selection completed. Found {len(watchlist_candidates)} candidates.")
-
-    # Step 8: Save results
-    if watchlist_candidates:
-        # Clear previous watchlist entries for today
-        today_jdate = get_today_jdate_str()
-        db.session.query(WeeklyWatchlistResult).filter(WeeklyWatchlistResult.jentry_date == today_jdate).delete()
-        
-        # Add new entries
-        db.session.add_all(watchlist_candidates)
+    try:
         db.session.commit()
-        logger.info(f"Successfully saved {len(watchlist_candidates)} watchlist entries for {today_jdate}.")
+        message = f"Weekly Watchlist selection completed. Saved {saved_count} symbols."
+        logger.info(message)
+        return True, message
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"❌ Database commit failed: {e}", exc_info=True)
+        return False, "Database commit failed."
 
-        # Step 9: Update aggregated performance metrics for the signals
-        performance_service.calculate_and_save_aggregated_performance(period_type='weekly')
-        
-    return watchlist_candidates
 
 
 def get_weekly_watchlist_results(jdate_str: Optional[str] = None):
     """
-    Retrieves the final weekly watchlist results for a given date or the latest available.
-    If no date is provided, fetches the latest watchlist generated.
+    بازیابی آخرین نتایج واچ‌لیست هفتگی (یا تاریخ مشخص‌شده در صورت ارسال).
+    خروجی شامل جزئیات نمادها و آخرین تاریخ به‌روزرسانی است.
     """
+
+    logger.info("📊 Retrieving latest weekly watchlist results...")
+
+    # --- Step 1: تعیین آخرین تاریخ ---
     if not jdate_str:
-        latest_date = db.session.query(func.max(WeeklyWatchlistResult.jentry_date)).scalar()
-        if not latest_date:
-            return []
-        jdate_str = latest_date
+        latest_record = WeeklyWatchlistResult.query.order_by(WeeklyWatchlistResult.jentry_date.desc()).first()
+        if not latest_record or not latest_record.jentry_date:
+            logger.warning("⚠️ No weekly watchlist results found.")
+            return {"top_watchlist_stocks": [], "last_updated": "نامشخص"}
+        jdate_str = latest_record.jentry_date
 
-    results = WeeklyWatchlistResult.query.filter(WeeklyWatchlistResult.jentry_date == jdate_str)\
-                                         .order_by(WeeklyWatchlistResult.created_at.desc()).all() 
+    logger.info(f"🗓 Latest Weekly Watchlist results date: {jdate_str}")
 
+    # --- Step 2: واکشی نتایج ---
+    results = WeeklyWatchlistResult.query.filter_by(jentry_date=jdate_str)\
+                                         .order_by(WeeklyWatchlistResult.created_at.desc()).all()
+
+    if not results:
+        logger.warning("⚠️ No results found for this date.")
+        return {"top_watchlist_stocks": [], "last_updated": jdate_str}
+
+    # --- Step 3: واکشی نام شرکت‌ها برای نمادهای واچ‌لیست ---
     symbol_ids_in_watchlist = [r.symbol_id for r in results]
     company_name_map = {}
+
     if symbol_ids_in_watchlist:
         company_name_records = ComprehensiveSymbolData.query.filter(
             ComprehensiveSymbolData.symbol_id.in_(symbol_ids_in_watchlist)
-        ).with_entities(ComprehensiveSymbolData.symbol_id, ComprehensiveSymbolData.company_name).all()
-        company_name_map = {symbol_id: company_name for symbol_id, company_name in company_name_records}
+        ).with_entities(
+            ComprehensiveSymbolData.symbol_id,
+            ComprehensiveSymbolData.company_name
+        ).all()
 
+        company_name_map = {sid: cname for sid, cname in company_name_records}
+
+    # --- Step 4: ساخت خروجی نهایی ---
     output_stocks = []
     for r in results:
         output_stocks.append({
-            'signal_unique_id': r.signal_unique_id, 
-            'symbol_id': r.symbol_id,
-            'symbol_name': r.symbol_name,
-            'company_name': company_name_map.get(r.symbol_id, r.symbol_name),
-            'outlook': r.outlook,
-            'reason': r.reason,
-            'entry_price': r.entry_price,
-            'jentry_date': r.jentry_date,
-            'exit_price': r.exit_price,
-            'jexit_date': r.jexit_date,
-            'profit_loss_percentage': r.profit_loss_percentage,
-            'status': r.status,
-            'score': r.score
+            "signal_unique_id": r.signal_unique_id,
+            "symbol_id": r.symbol_id,
+            "symbol_name": r.symbol_name,
+            "company_name": company_name_map.get(r.symbol_id, r.symbol_name),
+            "outlook": r.outlook,
+            "reason": r.reason,
+            "entry_price": r.entry_price,
+            "jentry_date": r.jentry_date,
+            "exit_price": r.exit_price,
+            "jexit_date": r.jexit_date,
+            "profit_loss_percentage": r.profit_loss_percentage,
+            "status": r.status,
+            "probability_percent": getattr(r, "probability_percent", None),
+            "score": getattr(r, "score", None)
         })
-        
-    # Sort by score descending
-    output_stocks.sort(key=lambda x: x.get('score', 0), reverse=True)
 
-    return output_stocks
+    # --- Step 5: مرتب‌سازی بر اساس امتیاز ---
+    output_stocks.sort(key=lambda x: (x.get("score") or 0), reverse=True)
+
+    logger.info(f"✅ Retrieved and enriched {len(output_stocks)} weekly watchlist results for {jdate_str}.")
+
+    # --- Step 6: بازگرداندن پاسخ نهایی ---
+    return {
+        "top_watchlist_stocks": output_stocks,
+        "last_updated": jdate_str
+    }
