@@ -5,10 +5,11 @@ from flask import current_app
 import logging 
 import uuid 
 
-# تنظیمات لاگینگ برای این ماژول
+
 logger = logging.getLogger(__name__)
 
-from services import weekly_watchlist_service # Import the service
+
+from services import weekly_watchlist_service, performance_service 
 
 weekly_watchlist_ns = Namespace('weekly_watchlist', description='Weekly Watchlist operations')
 weekly_watchlist_result_model = weekly_watchlist_ns.model('WeeklyWatchlistResultModel', {
@@ -46,21 +47,27 @@ class RunWeeklyWatchlistSelectionResource(Resource):
             logger.error(f"Error running Weekly Watchlist selection: {e}", exc_info=True)
             return {"message": f"An error occurred during Weekly Watchlist selection: {str(e)}"}, 500
 
-@weekly_watchlist_ns.route('/evaluate_performance')
-class EvaluateWeeklyWatchlistPerformanceResource(Resource):
-    @weekly_watchlist_ns.doc(security='Bearer Auth')
-    @jwt_required() 
+# --- NEW RESOURCE FOR SIGNAL CLOSURE (placed under weekly_watchlist_ns) ---
+@weekly_watchlist_ns.route('/close-signals')
+class CloseWeeklySignalsResource(Resource):
+    @weekly_watchlist_ns.doc(security='Bearer Auth', description='Closes active WeeklyWatchlist signals, evaluates performance, and updates aggregation reports.')
+    @jwt_required()
+    @weekly_watchlist_ns.response(200, 'Weekly signal closure and performance evaluation successful.')
+    @weekly_watchlist_ns.response(500, 'Error during signal closure.')
     def post(self):
-        logger.info("Received manual request to evaluate Weekly Watchlist performance.")
+        current_app.logger.info("API call: Initiating weekly signal closure and evaluation.")
         try:
-            success, message = weekly_watchlist_service.evaluate_weekly_watchlist_performance() 
+            success, message = performance_service.close_and_evaluate_weekly_signals() 
+            
             if success:
                 return {"message": message}, 200
             else:
                 return {"message": message}, 500
         except Exception as e:
-            logger.error(f"Error evaluating Weekly Watchlist performance: {e}", exc_info=True)
-            return {"message": f"An error occurred during Weekly Watchlist performance evaluation: {str(e)}"}, 500
+            current_app.logger.error(f"Error during weekly signal closure: {e}", exc_info=True)
+            return {"message": f"A critical error occurred during weekly signal closure: {str(e)}"}, 500
+
+            
     
 @weekly_watchlist_ns.route('/results')
 class GetWeeklyWatchlistResultsResource(Resource):
