@@ -7,13 +7,19 @@ import logging
 import traceback
 from datetime import date
 import jdatetime
-
-# ✅ اصلاح: jsonify از flask حذف شد زیرا با Flask-RESTX نیازی به آن نیست و باعث خطای TypeError می‌شود.
 from flask_restx import Namespace, Resource, fields, reqparse
-
 from extensions import db
 from sqlalchemy.orm import sessionmaker, Session
 
+
+
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask import request, current_app
+from flask_cors import cross_origin
+import datetime
+
+
+from werkzeug.exceptions import HTTPException
 # =========================
 # Namespace برای Flask-RESTX
 # =========================
@@ -45,7 +51,7 @@ def parse_date(value: str) -> date | None:
 # =========================
 # --- API Models for Swagger/RESTX Documentation ---
 # =========================
-historical_data_model = analysis_ns.model('HistoricalData', {
+historical_data_model = data_ns.model('HistoricalData', {
     'symbol_id': fields.String(required=True, description='Stock symbol ID (Persian short name)'),
     'symbol_name': fields.String(description='Stock symbol name (Persian short name)'),
     'jdate': fields.String(description='Persian date (YYYY-MM-DD)'),
@@ -106,7 +112,7 @@ historical_data_model = analysis_ns.model('HistoricalData', {
     'po5': fields.Float(description='Supply price 5')
 })
 
-comprehensive_symbol_data_model = analysis_ns.model('ComprehensiveSymbolData', {
+comprehensive_symbol_data_model = data_ns.model('ComprehensiveSymbolData', {
     'symbol_id': fields.String(required=True, description='Stock symbol ID (Persian short name)'),
     'symbol_name': fields.String(required=True, description='Stock symbol name (Persian short name)'),
     'company_name': fields.String(description='Company name'),
@@ -125,7 +131,7 @@ comprehensive_symbol_data_model = analysis_ns.model('ComprehensiveSymbolData', {
 })
 
 # Model for TechnicalIndicatorData
-technical_indicator_model = analysis_ns.model('TechnicalIndicatorData', {
+technical_indicator_model = data_ns.model('TechnicalIndicatorData', {
     'symbol_id': fields.String(required=True, description='شناسه نماد'),
     'jdate': fields.String(required=True, description='تاریخ شمسی (YYYY-MM-DD)'),
     'close_price': fields.Float(description='قیمت پایانی'),
@@ -149,7 +155,7 @@ technical_indicator_model = analysis_ns.model('TechnicalIndicatorData', {
     'resistance_broken': fields.Boolean(description='آیا مقاومت شکسته شده است')
 })
 
-fundamental_data_model = analysis_ns.model('FundamentalData', {
+fundamental_data_model = data_ns.model('FundamentalData', {
     'symbol_id': fields.String(required=True, description='Stock symbol ID (Persian short name)'),
     'last_updated': fields.DateTime(description='Last update timestamp'),
     
@@ -172,7 +178,7 @@ fundamental_data_model = analysis_ns.model('FundamentalData', {
 })
 
 # NEW: Model for ML Predictions (ADDED)
-ml_prediction_model = analysis_ns.model('MLPredictionModel', {
+ml_prediction_model = data_ns.model('MLPredictionModel', {
     'id': fields.Integer(readOnly=True, description='The unique identifier of the prediction'),
     'symbol_id': fields.String(required=True, description='The ID of the stock symbol'),
     'symbol_name': fields.String(required=True, description='The name of the stock symbol'),
@@ -427,14 +433,14 @@ class GetSymbolMLPredictionResource(Resource):
 # ۴. اندپوینت‌های مربوط به دریافت داده
 # ------------------------------------
 
-@analysis_ns.route('/stock-history/<string:symbol_input>') # تغییر نام متغیر به symbol_input
-@analysis_ns.param('symbol_input', 'شناسه یا نام نماد (مثال: خودرو)')
+@data_ns.route('/stock-history/<string:symbol_input>') # تغییر نام متغیر به symbol_input
+@data_ns.param('symbol_input', 'شناسه یا نام نماد (مثال: خودرو)')
 class StockHistoryResource(Resource):
-    @analysis_ns.doc(security='Bearer Auth', parser=historical_data_parser)
+    @data_ns.doc(security='Bearer Auth', parser=historical_data_parser)
     @jwt_required()
-    @analysis_ns.response(200, 'Historical data fetched successfully')
-    @analysis_ns.response(400, 'Invalid date format')
-    @analysis_ns.response(404, 'No data found for symbol')
+    @data_ns.response(200, 'Historical data fetched successfully')
+    @data_ns.response(400, 'Invalid date format')
+    @data_ns.response(404, 'No data found for symbol')
     def get(self, symbol_input): # تغییر نام متغیر به symbol_input
         """
         واکشی سابقه معاملات (Historical Data) یک نماد مشخص با قابلیت فیلتر زمانی.
@@ -449,7 +455,7 @@ class StockHistoryResource(Resource):
             end_date = parse_date(end_date_str)
 
             if (start_date_str and start_date is None) or (end_date_str and end_date is None):
-                analysis_ns.abort(400, "Invalid date format. Please use YYYY-MM-DD (Gregorian or Jalali).")
+                data_ns.abort(400, "Invalid date format. Please use YYYY-MM-DD (Gregorian or Jalali).")
 
             # 🚀 فراخوانی تابع سرویس
             history_data = get_historical_data_for_symbol(
@@ -461,11 +467,11 @@ class StockHistoryResource(Resource):
             
             if history_data is None:
                 current_app.logger.error(f"Service returned None for {symbol_input}")
-                analysis_ns.abort(500, "Internal server error during data retrieval. Service returned None.")
+                data_ns.abort(500, "Internal server error during data retrieval. Service returned None.")
 
             if not history_data:
                 # این خط باعث ایجاد 404 می‌شود.
-                analysis_ns.abort(404, f"No historical data found for symbol: {symbol_input} in the specified range.")
+                data_ns.abort(404, f"No historical data found for symbol: {symbol_input} in the specified range.")
 
             return {"history": history_data}, 200
             
@@ -476,7 +482,7 @@ class StockHistoryResource(Resource):
         except Exception as e:
             # برای هر خطای غیرمنتظره دیگر (مثل خطای دیتابیس یا منطقی)
             current_app.logger.error(f"An unexpected critical error occurred for {symbol_input}: {e}", exc_info=True)
-            analysis_ns.abort(500, f"An unexpected critical error occurred: {str(e)}")
+            data_ns.abort(500, f"An unexpected critical error occurred: {str(e)}")
 
 
             
