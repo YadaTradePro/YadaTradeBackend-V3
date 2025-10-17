@@ -71,9 +71,32 @@ detailed_signal_performance_model = performance_ns.model('DetailedSignalPerforma
 
 # Parser for aggregated performance reports
 aggregated_performance_parser = reqparse.RequestParser()
-aggregated_performance_parser.add_argument('period_type', type=str, choices=('weekly', 'annual'), help='Type of period for aggregation (weekly or annual).')
-aggregated_performance_parser.add_argument('signal_source', type=str, default='overall', help='Filter by signal source (e.g., weekly_watchlist, golden_key, overall).')
+aggregated_performance_parser.add_argument('period_type', type=str, choices=('weekly', 'annual', 'monthly'), help='Type of period for aggregation (weekly, monthly, or annual).')
+aggregated_performance_parser.add_argument('signal_source', type=str, default='overall', help='Filter by signal source (e.g., WeeklyWatchlistService, GoldenKeyService, overall).')
 
+
+# --- NEW RESOURCE FOR SIGNAL CLOSURE ---
+@performance_ns.route('/close-weekly-signals')
+class CloseWeeklySignalsResource(Resource):
+    @performance_ns.doc(security='Bearer Auth', description='Closes active WeeklyWatchlist signals, evaluates performance, and updates aggregation reports.')
+    @jwt_required()
+    @performance_ns.response(200, 'Weekly signal closure and performance evaluation successful.')
+    @performance_ns.response(500, 'Error during signal closure.')
+    def post(self):
+        current_app.logger.info("API call: Initiating weekly signal closure and evaluation.")
+        try:
+            # فراخوانی تابع جدید برای بستن سیگنال‌ها
+            success, message = performance_service.close_and_evaluate_weekly_signals() 
+            
+            if success:
+                return {"message": message}, 200
+            else:
+                return {"message": message}, 500
+        except Exception as e:
+            current_app.logger.error(f"Error during weekly signal closure: {e}", exc_info=True)
+            return {"message": f"A critical error occurred during weekly signal closure: {str(e)}"}, 500
+
+# --- EXISTING RESOURCES ---
 
 @performance_ns.route('/aggregated')
 class AggregatedPerformanceResource(Resource):
@@ -87,15 +110,8 @@ class AggregatedPerformanceResource(Resource):
         period_type = args['period_type'] 
         signal_source = args['signal_source'] 
         try:
-            # If period_type is None, it means we want the overall summary
-            if period_type: 
-                # This endpoint is designed for overall summary, not filtered aggregated reports
-                # If filtered reports are needed, a separate endpoint or more complex logic is required.
-                # For now, if period_type is specified, we'll return an empty summary or an error.
-                logger.warning("Attempted to retrieve filtered aggregated reports via /aggregated endpoint. Returning overall summary.")
-                performance_data = performance_service.get_overall_performance_summary()
-            else: 
-                performance_data = performance_service.get_overall_performance_summary()
+            # این اندپوینت برای خلاصه کلی است، بنابراین فیلترها نادیده گرفته می‌شوند
+            performance_data = performance_service.get_overall_performance_summary()
             return performance_data, 200
         except Exception as e:
             logger.error(f"Error retrieving aggregated performance: {e}", exc_info=True)
@@ -129,6 +145,7 @@ class CalculateAggregatedPerformanceResource(Resource):
 
         current_app.logger.info(f"API call: Initiating calculation of aggregated {period_type} performance for source: {signal_source}.")
         try:
+            # فراخوانی تابع با دو آرگومان که اکنون تابع در سرویس آن را می‌پذیرد
             success, message = performance_service.calculate_and_save_aggregated_performance(period_type, signal_source)
             if success:
                 return {"message": message}, 200
