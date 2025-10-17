@@ -490,18 +490,20 @@ class StockHistoryResource(Resource):
 # ---------------------------
 # Health Check
 # ---------------------------
+from sqlalchemy import text
+
 @data_ns.route('/health')
 class HealthResource(Resource):
     def get(self):
         """بررسی وضعیت سلامت سرویس و اتصال به دیتابیس."""
+        from sqlalchemy import text
         db_ok = False
         try:
-            db.session.execute('SELECT 1')
+            db.session.execute(text('SELECT 1'))
             db_ok = True
         except Exception as e:
             logging.getLogger(__name__).error(f"Health check DB connection failed: {e}")
 
-        # ✅ اصلاح: حذف jsonify
         return {
             "status": "ok",
             "message": "API is running.",
