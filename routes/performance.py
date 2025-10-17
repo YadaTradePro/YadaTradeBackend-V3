@@ -23,7 +23,7 @@ signal_source_performance_model = performance_ns.model('SignalSourcePerformance'
 aggregated_performance_model = performance_ns.model('AggregatedPerformanceModel', {
     'report_date': fields.String(description='Jalali report date'),
     'period_type': fields.String(description='Period type (daily, weekly, monthly, annual)'),
-    'signal_source': fields.String(description='Source of the signal (Golden Key, Weekly Watchlist, overall)'),
+    'signal_source': fields.String(description='Source of the signal (Fixed: Weekly Watchlist)'), # توضیحات به‌روز شد
     'total_signals': fields.Integer(description='Total signals in the period'),
     'successful_signals': fields.Integer(description='Number of successful signals'),
     'win_rate': fields.Float(description='Win rate percentage'),
@@ -69,10 +69,9 @@ detailed_signal_performance_model = performance_ns.model('DetailedSignalPerforma
     'updated_at': fields.String
 })
 
-# Parser for aggregated performance reports
+# Parser for aggregated performance reports - signal_source REMOVED
 aggregated_performance_parser = reqparse.RequestParser()
 aggregated_performance_parser.add_argument('period_type', type=str, choices=('weekly', 'annual', 'monthly'), help='Type of period for aggregation (weekly, monthly, or annual).')
-aggregated_performance_parser.add_argument('signal_source', type=str, default='overall', help='Filter by signal source (e.g., WeeklyWatchlistService, GoldenKeyService, overall).')
 
 
 # --- NEW RESOURCE FOR SIGNAL CLOSURE ---
@@ -103,14 +102,13 @@ class AggregatedPerformanceResource(Resource):
     @performance_ns.doc(security='Bearer Auth')
     @jwt_required() 
     @performance_ns.marshal_with(overall_performance_summary_model) 
-    @performance_ns.expect(aggregated_performance_parser) # Add parser for query params
+    @performance_ns.expect(aggregated_performance_parser) # Add parser for query params (only period_type remains)
     def get(self):
         logger.info("API call: Retrieving Aggregated Performance.")
         args = aggregated_performance_parser.parse_args()
-        period_type = args['period_type'] 
-        signal_source = args['signal_source'] 
+        # period_type is available in args, but get_overall_performance_summary does not use it.
         try:
-            # این اندپوینت برای خلاصه کلی است، بنابراین فیلترها نادیده گرفته می‌شوند
+            # این اندپوینت برای خلاصه کلی است، فیلترها نادیده گرفته می‌شوند
             performance_data = performance_service.get_overall_performance_summary()
             return performance_data, 200
         except Exception as e:
@@ -141,12 +139,12 @@ class CalculateAggregatedPerformanceResource(Resource):
     def post(self):
         args = aggregated_performance_parser.parse_args()
         period_type = args['period_type'] 
-        signal_source = args['signal_source'] 
+        # signal_source حذف شد. سرویس به طور پیش‌فرض WeeklyWatchlistService را استفاده می‌کند.
 
-        current_app.logger.info(f"API call: Initiating calculation of aggregated {period_type} performance for source: {signal_source}.")
+        current_app.logger.info(f"API call: Initiating calculation of aggregated {period_type} performance.")
         try:
-            # فراخوانی تابع با دو آرگومان که اکنون تابع در سرویس آن را می‌پذیرد
-            success, message = performance_service.calculate_and_save_aggregated_performance(period_type, signal_source)
+            # فراخوانی تابع تنها با period_type
+            success, message = performance_service.calculate_and_save_aggregated_performance(period_type)
             if success:
                 return {"message": message}, 200
             else:
