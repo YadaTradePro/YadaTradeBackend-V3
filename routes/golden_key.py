@@ -4,7 +4,6 @@ from flask_jwt_extended import jwt_required
 from flask import current_app, request
 import logging
 
-# تنظیمات لاگینگ برای این ماژول
 logger = logging.getLogger(__name__)
 
 from services import golden_key_service
@@ -48,19 +47,7 @@ golden_key_response_model = golden_key_ns.model('GoldenKeyResponse', {
     'last_updated': fields.String(description='Timestamp of last update')
 })
 
-# NEW: Parser for Golden Key filters (moved from analysis.py)
-golden_key_filters_parser = reqparse.RequestParser()
-golden_key_filters_parser.add_argument('filters', type=str, help='Comma-separated list of filter names to apply (e.g., "RSI بالای 70,MACD کراس صعودی").', location='args')
-
-
-# NEW: Model for GoldenKeyRequest (specifically for POST body)
-# This was implicitly expected by golden_key_request_model in the POST method
-golden_key_request_model = golden_key_ns.model('GoldenKeyRequestModelForPost', {
-    'filters': fields.String(required=False, description='Comma-separated list of filter names to apply (e.g., "RSI بالای 70,حجم بالا")')
-})
-
-
-# --- API Resource for Golden Key ---
+# --- API Resource for Golden Key Run (Cron/Manual Trigger) ---
 @golden_key_ns.route('/run_filters') 
 class RunGoldenKeyFiltersResource(Resource):
     @golden_key_ns.doc(security='Bearer Auth')
@@ -83,62 +70,23 @@ class RunGoldenKeyFiltersResource(Resource):
             current_app.logger.error(f"Error during Golden Key filter process: {e}", exc_info=True)
             return {"message": f"An error occurred: {str(e)}"}, 500
 
-@golden_key_ns.route('/results') # This route handles both GET and POST for results
+@golden_key_ns.route('/results') # This route now only handles GET for full results
 class GoldenKeyResultsResource(Resource):
-    @golden_key_ns.doc(security='Bearer Auth')
+    @golden_key_ns.doc(security='Bearer Auth', description='Retrieves the latest Golden Key results, including top stocks and filter definitions.')
     @jwt_required()
-    @golden_key_ns.expect(golden_key_filters_parser) # Use the new parser for GET filters
     @golden_key_ns.marshal_with(golden_key_response_model)
     @golden_key_ns.response(200, 'Golden Key results retrieved successfully.')
     @golden_key_ns.response(500, 'Error retrieving Golden Key results.')
     def get(self):
         """
         Retrieves the latest Golden Key results, including top stocks and filter definitions.
-        Optionally filters top stocks by selected technical filters.
+        (Always retrieves the full, unfiltered set of latest results).
         """
         current_app.logger.info("API call: Retrieving Golden Key Results (GET).")
-        args = golden_key_filters_parser.parse_args()
-        filters = args['filters'] # This will be a comma-separated string or None
 
         try:
-            results = golden_key_service.get_golden_key_results(filters=filters)
+            results = golden_key_service.get_golden_key_results()
             return results, 200
         except Exception as e:
             current_app.logger.error(f"Error retrieving Golden Key Results: {e}", exc_info=True)
             return {"message": f"An error occurred: {str(e)}"}, 500
-
-    @golden_key_ns.doc(security='Bearer Auth')
-    @jwt_required() 
-    @golden_key_ns.expect(golden_key_request_model, validate=False) # Use the specific request model for POST body
-    @golden_key_ns.marshal_with(golden_key_response_model) 
-    def post(self): 
-        current_app.logger.info("Received POST request to get Golden Key results (with filters).")
-        filters_param = None
-        if request.is_json:
-            data = request.json
-            filters_param = data.get('filters')
-
-        try:
-            results = golden_key_service.get_golden_key_results(filters=filters_param) 
-            return results, 200
-        except Exception as e:
-            current_app.logger.error(f"Error retrieving Golden Key results: {e}", exc_info=True)
-            return {"message": f"An error occurred while retrieving Golden Key results: {str(e)}"}, 500
-
-
-@golden_key_ns.route('/calculate_win_rate') 
-class CalculateGoldenKeyWinRateResource(Resource):
-    @golden_key_ns.doc(security='Bearer Auth')
-    @jwt_required() 
-    def post(self):
-        logger.info("Received manual request to calculate Golden Key Win-Rate.")
-        try:
-            success, message = golden_key_service.calculate_golden_key_win_rate()
-            if success:
-                return {"message": message}, 200
-            else:
-                return {"message": message}, 500
-        except Exception as e:
-            logger.error(f"Error calculating Golden Key Win-Rate: {e}", exc_info=True)
-            return {"message": f"An error occurred during Win-Rate calculation: {str(e)}"}, 500
-
