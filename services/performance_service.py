@@ -1,7 +1,7 @@
 # services/performance_service.py
 
 from extensions import db
-from models import SignalsPerformance, AggregatedPerformance, WeeklyWatchlistResult, ComprehensiveSymbolData
+from models import SignalsPerformance, AggregatedPerformance, WeeklyWatchlistResult, ComprehensiveSymbolData, HistoricalData
 from datetime import datetime, timedelta, date
 import jdatetime
 import pandas as pd
@@ -56,17 +56,37 @@ def safe_date_format(date_obj, fmt='%Y-%m-%d'):
 
 def get_latest_symbol_price(symbol_id: str) -> Optional[float]:
     """
-    Placeholder: Retrieves the latest available market price for a symbol.
-    In a real application, this should query the latest historical or EOD data.
+    Retrieves the latest available market final or closing price for a symbol
+    from the HistoricalData table based on the last calculated market day.
+    This price is used as the Exit Price for closing a signal.
     """
-    # فرض بر این است که قیمت آخرین روز معاملاتی در ComprehensiveSymbolData موجود است
-    latest_data = db.session.query(ComprehensiveSymbolData).filter_by(symbol_id=symbol_id).first()
-    if latest_data and latest_data.last_trade_price is not None:
-        return latest_data.last_trade_price
-    # Fallback to last closing price if last_trade_price is null
-    if latest_data and latest_data.last_closing_price is not None:
-        return latest_data.last_closing_price
-    logger.warning(f"Could not retrieve a valid price for symbol_id: {symbol_id}")
+    # 1. تعیین تاریخ آخرین روز معاملاتی
+    current_greg_date = date.today()
+    last_market_date_gregorian = _get_last_market_day_date_gregorian(current_greg_date)
+
+    logger.debug(f"Retrieving price for {symbol_id} on last market day: {last_market_date_gregorian}")
+
+    # 2. کوئری جدول HistoricalData برای نماد و تاریخ مشخص
+    latest_price_data = db.session.query(HistoricalData).filter(
+        HistoricalData.symbol_id == symbol_id,
+        HistoricalData.date == last_market_date_gregorian
+    ).first()
+
+    # 3. استخراج قیمت
+    if latest_price_data:
+        # اولویت با 'final' (آخرین قیمت معامله)
+        if latest_price_data.final is not None:
+            return latest_price_data.final
+        
+        # در صورت نبود final، از 'close' (قیمت پایانی) استفاده شود
+        if latest_price_data.close is not None:
+            return latest_price_data.close
+
+    # 4. در صورت نبود داده برای آخرین روز معاملاتی یا خالی بودن قیمت‌ها
+    logger.warning(
+        f"Could not retrieve 'final' or 'close' price for symbol_id: {symbol_id} "
+        f"on the calculated last market day: {last_market_date_gregorian}"
+    )
     return None
 
 def calculate_pnl_percent(entry_price: float, exit_price: float) -> float:
