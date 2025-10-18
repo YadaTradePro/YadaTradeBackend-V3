@@ -20,6 +20,15 @@ import datetime
 
 
 from werkzeug.exceptions import HTTPException
+
+from services import market_analysis_service
+from services.weekly_watchlist_service import (
+    _get_symbol_analysis_data, 
+    _calculate_processed_metrics,
+    _get_leading_sectors # [cite: 80]
+)
+
+
 # =========================
 # Namespace برای Flask-RESTX
 # =========================
@@ -51,150 +60,181 @@ def parse_date(value: str) -> date | None:
 # =========================
 # --- API Models for Swagger/RESTX Documentation ---
 # =========================
+# Historical Data Model
 historical_data_model = data_ns.model('HistoricalData', {
-    'symbol_id': fields.String(required=True, description='Stock symbol ID (Persian short name)'),
-    'symbol_name': fields.String(description='Stock symbol name (Persian short name)'),
-    'jdate': fields.String(description='Persian date (YYYY-MM-DD)'),
-    'date': fields.String(description='Gregorian date (YYYY-MM-DD)'),
-    'open': fields.Float(description='Opening price'),
-    'high': fields.Float(description='Highest price'),
-    'low': fields.Float(description='Lowest price'),
-    'close': fields.Float(description='Closing price'),
-    'final': fields.Float(description='Final price'),
-    'yesterday_price': fields.Float(description='Yesterday\'s closing price'),
-    'volume': fields.Integer(description='Trading volume'),
-    'value': fields.Float(description='Trading value'),
-    'num_trades': fields.Integer(description='Number of trades'),
-    'plc': fields.Float(description='Price change (last closing)'),
-    'plp': fields.Float(description='Price change percentage (last closing)'),
-    'pcc': fields.Float(description='Price change (final closing)'),
-    'pcp': fields.Float(description='Price change percentage (final closing)'),
-    'mv': fields.Float(description='Market Value'),
-    'eps': fields.Float(description='Earnings Per Share'),
-    'pe': fields.Float(description='Price to Earnings Ratio'),
-    'buy_count_i': fields.Integer(description='Number of real buyer accounts'),
-    'buy_count_n': fields.Integer(description='Number of legal buyer accounts'),
-    'sell_count_i': fields.Integer(description='Number of real seller accounts'),
-    'sell_count_n': fields.Integer(description='Number of legal seller accounts'),
-    'buy_i_volume': fields.Integer(description='Real buyer volume'),
-    'buy_n_volume': fields.Integer(description='Legal buyer volume'),
-    'sell_i_volume': fields.Integer(description='Real seller volume'),
-    'sell_n_volume': fields.Integer(description='Legal seller volume'),
-    'zd1': fields.Integer(description='Demand count 1'),
-    'qd1': fields.Integer(description='Demand volume 1'),
-    'pd1': fields.Float(description='Demand price 1'),
-    'zo1': fields.Integer(description='Supply count 1'),
-    'qo1': fields.Integer(description='Supply volume 1'),
-    'po1': fields.Float(description='Supply price 1'),
-    'zd2': fields.Integer(description='Demand count 2'),
-    'qd2': fields.Integer(description='Demand volume 2'),
-    'pd2': fields.Float(description='Demand price 2'),
-    'zo2': fields.Integer(description='Supply count 2'),
-    'qo2': fields.Integer(description='Supply volume 2'),
-    'po2': fields.Float(description='Supply price 2'),
-    'zd3': fields.Integer(description='Demand count 3'),
-    'qd3': fields.Integer(description='Demand volume 3'),
-    'pd3': fields.Float(description='Demand price 3'),
-    'zo3': fields.Integer(description='Supply count 3'),
-    'qo3': fields.Integer(description='Supply volume 3'),
-    'po3': fields.Float(description='Supply price 3'),
-    'zd4': fields.Integer(description='Demand count 4'),
-    'qd4': fields.Integer(description='Demand volume 4'),
-    'pd4': fields.Float(description='Demand price 4'),
-    'zo4': fields.Integer(description='Supply count 4'),
-    'qo4': fields.Integer(description='Supply volume 4'),
-    'po4': fields.Float(description='Supply price 4'),
-    'zd5': fields.Integer(description='Demand count 5'),
-    'qd5': fields.Integer(description='Demand volume 5'),
-    'pd5': fields.Float(description='Demand price 5'),
-    'zo5': fields.Integer(description='Supply count 5'),
-    'qo5': fields.Integer(description='Supply volume 5'),
-    'po5': fields.Float(description='Supply price 5')
+    'symbol_id': fields.String(required=True, description='شناسه نماد (Persian short name)'),
+    'symbol_name': fields.String(description='نام نماد (Persian short name)'),
+    'jdate': fields.String(description='تاریخ شمسی (YYYY-MM-DD)'),
+    'date': fields.String(description='تاریخ میلادی (YYYY-MM-DD)'),
+    'open': fields.Float(description='قیمت آغازین'),
+    'high': fields.Float(description='بیشترین قیمت'),
+    'low': fields.Float(description='کمترین قیمت'),
+    'close': fields.Float(description='قیمت پایانی'),
+    'final': fields.Float(description='قیمت نهایی'),
+    'yesterday_price': fields.Float(description='قیمت دیروز'),
+    'volume': fields.Integer(description='حجم معاملات'),
+    'value': fields.Float(description='ارزش معاملات'),
+    'num_trades': fields.Integer(description='تعداد معاملات'),
+    'plc': fields.Float(description='تغییر قیمت پایانی'),
+    'plp': fields.Float(description='درصد تغییر قیمت پایانی'),
+    'pcc': fields.Float(description='تغییر قیمت نهایی'),
+    'pcp': fields.Float(description='درصد تغییر قیمت نهایی'),
+    'mv': fields.Float(description='ارزش بازار'),
+    'eps': fields.Float(description='EPS'),
+    'pe': fields.Float(description='P/E'),
+    'buy_count_i': fields.Integer(description='تعداد خریداران حقیقی'),
+    'buy_count_n': fields.Integer(description='تعداد خریداران حقوقی'),
+    'sell_count_i': fields.Integer(description='تعداد فروشندگان حقیقی'),
+    'sell_count_n': fields.Integer(description='تعداد فروشندگان حقوقی'),
+    'buy_i_volume': fields.Integer(description='حجم خرید حقیقی'),
+    'buy_n_volume': fields.Integer(description='حجم خرید حقوقی'),
+    'sell_i_volume': fields.Integer(description='حجم فروش حقیقی'),
+    'sell_n_volume': fields.Integer(description='حجم فروش حقوقی'),
 })
 
+# Comprehensive Symbol Info
 comprehensive_symbol_data_model = data_ns.model('ComprehensiveSymbolData', {
-    'symbol_id': fields.String(required=True, description='Stock symbol ID (Persian short name)'),
-    'symbol_name': fields.String(required=True, description='Stock symbol name (Persian short name)'),
-    'company_name': fields.String(description='Company name'),
-    'isin': fields.String(description='ISIN code'),
-    'market_type': fields.String(description='Market type'),
-    'flow': fields.String(description='Flow (e.g., 1 for main market, 2 for secondary)'),
-    'industry': fields.String(description='Industry name'),
-    'capital': fields.String(description='Company capital'),
-    'legal_shareholder_percentage': fields.Float(description='Legal Shareholder Percentage'),
-    'real_shareholder_percentage': fields.Float(description='Real Shareholder Percentage'),
-    'float_shares': fields.Float(description='Float shares'),
-    'base_volume': fields.Float(description='Base volume'),
-    'group_name': fields.String(description='Group name'),
-    'description': fields.String(description='Symbol description'),
-    'last_historical_update_date': fields.String(description='Last historical update date (YYYY-MM-DD)')
+    'symbol_id': fields.String(required=True),
+    'symbol_name': fields.String(required=True),
+    'company_name': fields.String,
+    'isin': fields.String,
+    'market_type': fields.String,
+    'flow': fields.String,
+    'industry': fields.String,
+    'capital': fields.String,
+    'legal_shareholder_percentage': fields.Float,
+    'real_shareholder_percentage': fields.Float,
+    'float_shares': fields.Float,
+    'base_volume': fields.Float,
+    'group_name': fields.String,
+    'description': fields.String,
+    'last_historical_update_date': fields.String,
 })
 
-# Model for TechnicalIndicatorData
+# Technical Indicators
 technical_indicator_model = data_ns.model('TechnicalIndicatorData', {
-    'symbol_id': fields.String(required=True, description='شناسه نماد'),
-    'jdate': fields.String(required=True, description='تاریخ شمسی (YYYY-MM-DD)'),
-    'close_price': fields.Float(description='قیمت پایانی'),
-    'RSI': fields.Float(description='اندیکاتور RSI'),
-    'MACD': fields.Float(description='اندیکاتور MACD'),
-    'MACD_Signal': fields.Float(description='خط سیگنال MACD'),
-    'MACD_Hist': fields.Float(description='هیستوگرام MACD'),
-    'SMA_20': fields.Float(description='میانگین متحرک ساده ۲۰ روزه'),
-    'SMA_50': fields.Float(description='میانگین متحرک ساده ۵۰ روزه'),
-    'Bollinger_High': fields.Float(description='باند بالای بولینگر'),
-    'Bollinger_Low': fields.Float(description='باند پایین بولینگر'),
-    'Bollinger_MA': fields.Float(description='میانگین متحرک باند بولینگر'),
-    'Volume_MA_20': fields.Float(description='میانگین متحرک حجم ۲۰ روزه'),
-    'ATR': fields.Float(description='اندیکاتور ATR'),
-    # New indicators added to the model
-    'Stochastic_K': fields.Float(description='Stochastic Oscillator %K'),
-    'Stochastic_D': fields.Float(description='Stochastic Oscillator %D'),
-    'squeeze_on': fields.Boolean(description='وضعیت Squeeze Momentum'),
-    'halftrend_signal': fields.Integer(description='سیگنال HalfTrend (1 برای خرید)'),
-    'resistance_level_50d': fields.Float(description='سطح مقاومت ۵۰ روزه'),
-    'resistance_broken': fields.Boolean(description='آیا مقاومت شکسته شده است')
+    'symbol_id': fields.String(required=True),
+    'jdate': fields.String(required=True),
+    'close_price': fields.Float,
+    'RSI': fields.Float,
+    'MACD': fields.Float,
+    'MACD_Signal': fields.Float,
+    'MACD_Hist': fields.Float,
+    'SMA_20': fields.Float,
+    'SMA_50': fields.Float,
+    'Bollinger_High': fields.Float,
+    'Bollinger_Low': fields.Float,
+    'Bollinger_MA': fields.Float,
+    'Volume_MA_20': fields.Float,
+    'ATR': fields.Float,
+    'Stochastic_K': fields.Float,
+    'Stochastic_D': fields.Float,
+    'squeeze_on': fields.Boolean,
+    'halftrend_signal': fields.Integer,
+    'resistance_level_50d': fields.Float,
+    'resistance_broken': fields.Boolean
 })
 
+# Fundamental Data
 fundamental_data_model = data_ns.model('FundamentalData', {
-    'symbol_id': fields.String(required=True, description='Stock symbol ID (Persian short name)'),
-    'last_updated': fields.DateTime(description='Last update timestamp'),
-    
-    # --- داده‌های بنیادی کلاسیک ---
-    'eps': fields.Float(description='Earnings Per Share'),
-    'pe': fields.Float(description='Price-to-Earnings Ratio'),
-    'group_pe_ratio': fields.Float(description='Group Price-to-Earnings Ratio'),
-    'psr': fields.Float(description='Price-to-Sales Ratio (PSR)'),
-    'p_s_ratio': fields.Float(description='Price-to-Sales Ratio (P/S)'),
-    'market_cap': fields.Float(description='Market Capitalization'),
-    'base_volume': fields.Float(description='Base Volume'),
-    'float_shares': fields.Float(description='Float Shares'),
-
-    # --- داده‌های فاندامنتال روزانه (جریان سرمایه) ---
-    'jdate': fields.String(description='Jalali date of record'),
-    'date': fields.Date(description='Gregorian date of record'),
-    'real_power_ratio': fields.Float(description='Real Power Ratio (buyer/seller strength)'),
-    'volume_ratio_20d': fields.Float(description='Volume ratio compared to 20-day average'),
-    'daily_liquidity': fields.Float(description='Daily liquidity (final_price × volume)')
+    'symbol_id': fields.String(required=True),
+    'last_updated': fields.DateTime,
+    'eps': fields.Float,
+    'pe': fields.Float,
+    'group_pe_ratio': fields.Float,
+    'psr': fields.Float,
+    'p_s_ratio': fields.Float,
+    'market_cap': fields.Float,
+    'base_volume': fields.Float,
+    'float_shares': fields.Float,
+    'jdate': fields.String,
+    'date': fields.Date,
+    'real_power_ratio': fields.Float,
+    'volume_ratio_20d': fields.Float,
+    'daily_liquidity': fields.Float
 })
 
-# NEW: Model for ML Predictions (ADDED)
+# --- ML Prediction ---
 ml_prediction_model = data_ns.model('MLPredictionModel', {
-    'id': fields.Integer(readOnly=True, description='The unique identifier of the prediction'),
-    'symbol_id': fields.String(required=True, description='The ID of the stock symbol'),
-    'symbol_name': fields.String(required=True, description='The name of the stock symbol'),
-    'prediction_date': fields.String(required=True, description='Gregorian date when the prediction was made (YYYY-MM-DD)'),
-    'jprediction_date': fields.String(required=True, description='Jalali date when the prediction was made (YYYY-MM-DD)'),
-    'prediction_period_days': fields.Integer(description='Number of days for the prediction horizon'),
-    'predicted_trend': fields.String(required=True, description='Predicted trend: UP, DOWN, or NEUTRAL'),
-    'prediction_probability': fields.Float(required=True, description='Probability/confidence of the predicted trend (0.0 to 1.0)'),
-    'predicted_price_at_period_end': fields.Float(description='Optional: Predicted price at the end of the period'),
-    'actual_price_at_period_end': fields.Float(description='Actual price at the end of the prediction period'),
-    'actual_trend_outcome': fields.String(description='Actual trend outcome: UP, DOWN, or NEUTRAL'),
-    'is_prediction_accurate': fields.Boolean(description='True if predicted_trend matches actual_trend_outcome'),
-    'signal_source': fields.String(description='Source of the signal, e.g., ML-Trend'),
-    'model_version': fields.String(description='Version of the ML model used for prediction'),
-    'created_at': fields.String(description='Timestamp of creation'),
-    'updated_at': fields.String(description='Timestamp of last update'),
+    'id': fields.Integer(readOnly=True),
+    'symbol_id': fields.String(required=True),
+    'symbol_name': fields.String(required=True),
+    'prediction_date': fields.String(required=True),
+    'jprediction_date': fields.String(required=True),
+    'prediction_period_days': fields.Integer,
+    'predicted_trend': fields.String(required=True),
+    'prediction_probability': fields.Float(required=True),
+    'predicted_price_at_period_end': fields.Float,
+    'actual_price_at_period_end': fields.Float,
+    'actual_trend_outcome': fields.String,
+    'is_prediction_accurate': fields.Boolean,
+    'signal_source': fields.String,
+    'model_version': fields.String,
+    'created_at': fields.String,
+    'updated_at': fields.String
+})
+
+# =================================================================================
+# Combined Analysis Models
+# =================================================================================
+raw_historical_model = data_ns.model('RawHistorical', {
+    'jdate': fields.String,
+    'close': fields.Float,
+    'volume': fields.Float,
+    'plp': fields.Float,
+    'buy_i_volume': fields.Float,
+    'sell_i_volume': fields.Float
+})
+
+raw_fundamental_model = data_ns.model('RawFundamental', {
+    'jdate': fields.String,
+    'eps': fields.Float,
+    'pe': fields.Float,
+    'group_pe_ratio': fields.Float,
+    'real_power_ratio': fields.Float
+})
+
+raw_technical_model = data_ns.model('RawTechnical', {
+    'jdate': fields.String,
+    'RSI': fields.Float,
+    'SMA_50': fields.Float,
+    'MACD': fields.Float,
+    'MACD_Signal': fields.Float,
+    'ATR': fields.Float
+})
+
+raw_candlestick_model = data_ns.model('RawCandlestick', {
+    'jdate': fields.String,
+    'pattern_name': fields.String
+})
+
+processed_model = data_ns.model('ProcessedMetrics', {
+    'trend_score': fields.Float,
+    'value_score': fields.Float,
+    'flow_signal': fields.String,
+    'flow_score': fields.Float,
+    'risk_penalty': fields.Float,
+    'total_score': fields.Float,
+    'overall_signal': fields.String,
+    'target_upside_percent': fields.Float,
+    'reasons_summary': fields.List(fields.String)
+})
+
+symbol_analysis_profile_model = data_ns.model('SymbolAnalysisProfile', {
+    'symbol_id': fields.String(required=True),
+    'symbol_name': fields.String,
+    'company_name': fields.String,
+    'sector_name': fields.String,
+    'raw_historical': fields.Nested(raw_historical_model),
+    'raw_fundamental': fields.Nested(raw_fundamental_model),
+    'raw_technical': fields.Nested(raw_technical_model),
+    'raw_candlestick': fields.Nested(raw_candlestick_model),
+    'processed': fields.Nested(processed_model)
+})
+
+combined_analysis_response_model = data_ns.model('CombinedAnalysisResponse', {
+    'status': fields.String(example="success"),
+    'data': fields.List(fields.Nested(symbol_analysis_profile_model))
 })
 
 
@@ -228,6 +268,14 @@ historical_data_parser.add_argument('end_date', type=str, help='تاریخ پا�
 ml_generate_parser = reqparse.RequestParser()
 ml_generate_parser.add_argument('prediction_date', type=str, required=False, help='تاریخ میلادی برای تولید پیش‌بینی (YYYY-MM-DD)')
 ml_generate_parser.add_argument('prediction_period_days', type=int, default=7, help='دوره پیش‌بینی به روز')
+
+
+# ← اضافه: Parser برای اندپوینت combined analysis (list of symbols)
+combined_analysis_parser = reqparse.RequestParser()
+combined_analysis_parser.add_argument(
+    'symbols', type=str, required=True,
+    help='Comma-separated list of symbol names (e.g., "خودرو,خساپا")', action='split'
+)
 
 
 # =================================================================================
@@ -485,7 +533,144 @@ class StockHistoryResource(Resource):
             data_ns.abort(500, f"An unexpected critical error occurred: {str(e)}")
 
 
-            
+
+
+
+# ← اضافه: اندپوینت GET برای combined analysis
+@data_ns.route('/combined-analysis')
+class CombinedAnalysisResource(Resource):
+
+    @data_ns.doc('get_combined_analysis')
+    @data_ns.expect(combined_analysis_parser)
+    @data_ns.marshal_with(combined_analysis_response_model)
+    def get(self):
+        """
+        واکشی پروفایل تحلیلی کامل (خام + پردازش‌شده) بر اساس *نام نماد*.
+        ابتدا نام نماد به ID تبدیل می‌شود تا داده‌ها از دیتابیس با دقت بالا واکشی شوند.
+        """
+        logger = logging.getLogger(__name__)
+        logger.info("🔍 [API] Fetching combined analysis profile for symbols (by name)...")
+
+        try:
+            args = combined_analysis_parser.parse_args()
+            symbol_names = args['symbols']
+
+            if not symbol_names:
+                logger.warning("No symbol names provided.")
+                return {"status": "error", "data": []}, 400
+
+            results_data = []
+
+            # --- مرحله ۱: تبدیل نام نماد به ID ---
+            symbol_mappings = {}
+            for name in symbol_names:
+                try:
+                    record = SymbolInfo.query.filter_by(symbol_name=name).first()
+                    if record:
+                        symbol_mappings[name] = record.symbol_id
+                    else:
+                        logger.warning(f"Symbol name not found in DB: {name}")
+                except Exception as e:
+                    logger.error(f"DB lookup error for {name}: {e}")
+
+            # --- مرحله ۲: تحلیل بر اساس ID ---
+            for symbol_name in symbol_names:
+                symbol_id = symbol_mappings.get(symbol_name)
+                if not symbol_id:
+                    results_data.append({
+                        "symbol_name": symbol_name,
+                        "processed": {"error": "Symbol not found"}
+                    })
+                    continue
+
+                try:
+                    hist_df, tech_df, fundamental_rec, pattern_rec, symbol_info = _get_symbol_analysis_data(symbol_id)
+
+                    if hist_df.empty or tech_df.empty or not fundamental_rec or not symbol_info:
+                        logger.warning(f"Incomplete data for {symbol_name}.")
+                        results_data.append({
+                            "symbol_id": symbol_id,
+                            "symbol_name": symbol_name,
+                            "processed": {"error": "Incomplete data for analysis"}
+                        })
+                        continue
+
+                    processed_metrics = _calculate_processed_metrics(
+                        hist_df, tech_df, fundamental_rec, pattern_rec, symbol_info, _get_leading_sectors()
+                    )
+
+                    last_hist = hist_df.iloc[-1]
+                    last_tech = tech_df.iloc[-1]
+
+                    results_data.append({
+                        "symbol_id": symbol_id,
+                        "symbol_name": symbol_name,
+                        "company_name": getattr(symbol_info, 'company_name', None),
+                        "sector_name": getattr(symbol_info, 'sector_name', None),
+                        "raw_historical": {
+                            "jdate": last_hist.get('jdate'),
+                            "close": last_hist.get('close'),
+                            "volume": last_hist.get('volume'),
+                            "plp": last_hist.get('plp'),
+                            "buy_i_volume": last_hist.get('buy_i_volume'),
+                            "sell_i_volume": last_hist.get('sell_i_volume')
+                        },
+                        "raw_fundamental": {
+                            "jdate": fundamental_rec.jdate,
+                            "eps": fundamental_rec.eps,
+                            "pe": fundamental_rec.pe,
+                            "group_pe_ratio": fundamental_rec.group_pe_ratio,
+                            "real_power_ratio": fundamental_rec.real_power_ratio
+                        },
+                        "raw_technical": {
+                            "jdate": last_tech.get('jdate'),
+                            "RSI": last_tech.get('RSI'),
+                            "SMA_50": last_tech.get('SMA_50'),
+                            "MACD": last_tech.get('MACD'),
+                            "MACD_Signal": last_tech.get('MACD_Signal'),
+                            "ATR": last_tech.get('ATR')
+                        },
+                        "raw_candlestick": {
+                            "jdate": getattr(pattern_rec, 'jdate', None),
+                            "pattern_name": getattr(pattern_rec, 'pattern_name', None)
+                        },
+                        "processed": processed_metrics
+                    })
+
+                except Exception as e_inner:
+                    logger.error(f"❌ Error in analysis for {symbol_name}: {e_inner}")
+                    results_data.append({
+                        "symbol_name": symbol_name,
+                        "processed": {"error": str(e_inner)}
+                    })
+
+            return {"status": "success", "data": results_data}, 200
+
+        except Exception as e_outer:
+            logger.error(f"❌ Critical error in combined-analysis endpoint: {e_outer}")
+            return {"status": "error", "message": str(e_outer)}, 500
+
+
+
+
+# Market Summary
+@data_ns.route('/market-summary')
+class MarketSummaryResource(Resource):
+    def get(self):
+        """
+        Generates and returns a structured summary of the market analysis.
+        Provides a daily or weekly report in JSON format.
+        """
+        current_app.logger.info("API request for market summary.")
+        
+        # ✅ این تابع اکنون یک دیکشنری کامل (نه فقط متن) برمی‌گرداند
+        summary_data = market_analysis_service.generate_market_summary()
+        
+        # ✅ دیکشنری را مستقیماً برگردانید. 
+        # Flask-RESTX به صورت خودکار آن را به JSON تبدیل می‌کند.
+        return summary_data, 200
+
+
 
 # ---------------------------
 # Health Check
