@@ -14,6 +14,8 @@ import numpy as np
 from types import SimpleNamespace
 from models import DailySectorPerformance
 from typing import List, Dict, Tuple, Optional # NEW: Added for professional type hinting
+import time
+
 
 # NEW: Import for market sentiment analysis
 from services.index_data_fetcher import get_market_indices
@@ -732,6 +734,7 @@ def _check_static_levels_filters(technical_rec, last_close_val):
 
     return satisfied_filters, reason_parts
 # --- END NEW STRATEGIC FILTERS --- 
+
 def run_weekly_watchlist_selection():
     """
     انتخاب نمادها برای واچ‌لیست هفتگی با استفاده از داده‌های حجیم،
@@ -753,8 +756,10 @@ def run_weekly_watchlist_selection():
     import uuid
     from datetime import datetime, timedelta, date
     import json
+    import time  # ← اضافه: برای timing logs
 
     logger.info("🚀 Starting Weekly Watchlist selection process...")
+    start_time = time.time()  # ← اضافه: Total timer
 
     # Step 1: Determine market sentiment and leading sectors
     market_sentiment = _get_market_sentiment()
@@ -783,7 +788,10 @@ def run_weekly_watchlist_selection():
         return False, "No active symbols available for analysis."
 
     symbol_ids = [s.symbol_id for s in symbols_to_analyze]
-    logger.info(f"🧩 Found {len(symbol_ids)} active symbols for analysis.")
+    total_symbols = len(symbol_ids)  # ← اضافه: Counter برای تعداد واردشده
+    logger.info(f"🧩 Found {total_symbols} active symbols for analysis.")  # ← Log تعداد entered
+
+    fetch_start = time.time()  # ← اضافه: Fetch timer
 
     # Calculate lookback date
     today_greg = datetime.now().date()
@@ -826,27 +834,42 @@ def run_weekly_watchlist_selection():
         MLPrediction.predicted_trend == 'Uptrend'
     ).all()
 
+    fetch_end = time.time()  # ← اضافه: End fetch timer
+    logger.info(f"📥 Bulk fetch time: {fetch_end - fetch_start:.2f}s (hist: {len(hist_df)}, tech: {len(tech_df)} rows)")  # ← Log fetch time & rows
+
     # Grouping Data
+    group_start = time.time()  # ← اضافه: Group timer
     hist_groups = {k: v.sort_values(by='jdate') for k, v in hist_df.groupby("symbol_id")} if not hist_df.empty else {}
     tech_groups = {k: v.sort_values(by='jdate') for k, v in tech_df.groupby("symbol_id")} if not tech_df.empty else {}
     fundamental_map = {rec.symbol_id: rec for rec in fundamental_records}
     candlestick_map = {rec.symbol_id: rec for rec in candlestick_records}
     ml_prediction_set = {rec.symbol_id for rec in ml_predictions}
 
+    group_end = time.time()  # ← اضافه
+    logger.info(f"📊 Data grouping completed: {group_end - group_start:.2f}s. Groups: hist={len(hist_groups)}, tech={len(tech_groups)}")  # ← Log group time & counts
+
     logger.info("📊 Data grouping completed. Beginning scoring and selection...")
 
     # Step 3: Scoring
     watchlist_candidates = []
+    processed_count = 0  # ← اضافه: Counter برای processed (full analysis)
+    skipped_count = 0    # ← اضافه: Counter برای skipped
+    loop_start = time.time()  # ← اضافه: Loop timer
+    
     for symbol in symbols_to_analyze:
         symbol_hist_df = hist_groups.get(symbol.symbol_id, pd.DataFrame()).copy()
         symbol_tech_df = tech_groups.get(symbol.symbol_id, pd.DataFrame()).copy()
 
         if len(symbol_hist_df) < MIN_REQUIRED_HISTORY_DAYS:
+            skipped_count += 1  # ← اضافه
+            logger.debug(f"Skipped {symbol.symbol_name} ({symbol.symbol_id}): insufficient history ({len(symbol_hist_df)} < {MIN_REQUIRED_HISTORY_DAYS})")  # ← Log skip (debug, low spam)
             continue
 
         last_close_series = _get_close_series_from_hist_df(symbol_hist_df)
         entry_price = float(last_close_series.iloc[-1]) if not last_close_series.empty else None
         if entry_price is None or pd.isna(entry_price):
+            skipped_count += 1  # ← اضافه
+            logger.warning(f"Skipping {symbol.symbol_name} ({symbol.symbol_id}) due to missing entry price.")  # موجود + symbol_id برای debug
             continue
 
         all_satisfied_filters = []
@@ -893,6 +916,16 @@ def run_weekly_watchlist_selection():
                 "score": score
             })
 
+        processed_count += 1  # ← اضافه: هر symbol که به filters رسید (حتی اگر score < threshold) – full analysis count
+        
+        # Log progress every 100 symbols
+        if processed_count % 100 == 0:
+            avg_loop_time = (time.time() - loop_start) / processed_count
+            logger.info(f"Progress: {processed_count}/{total_symbols} symbols analyzed (avg {avg_loop_time:.3f}s per symbol)")
+
+    loop_end = time.time()  # ← اضافه
+    logger.info(f"🔄 Loop completed: Processed {processed_count}/{total_symbols} symbols (skipped {skipped_count}). Loop time: {loop_end - loop_start:.2f}s")  # ← Log counts & time
+
     logger.info(f"✅ {len(watchlist_candidates)} symbols passed the threshold ({score_threshold}). Saving top 8...")
 
     # Step 4: Save results
@@ -931,6 +964,8 @@ def run_weekly_watchlist_selection():
         db.session.commit()
         message = f"Weekly Watchlist selection completed. Saved {saved_count} symbols."
         logger.info(message)
+        total_time = time.time() - start_time  # ← اضافه
+        logger.info(f"⏱️ Full process time: {total_time:.2f}s")  # ← Log total time
         return True, message
     except Exception as e:
         db.session.rollback()
