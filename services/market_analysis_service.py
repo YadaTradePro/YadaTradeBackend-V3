@@ -61,7 +61,14 @@ except Exception as e:
 
 ---
 
-{{ sector_summary }}
+**خلاصه عملکرد صنایع برتر (Top 3):**
+{% if sector_summary %}
+{% for sector in sector_summary %}
+- **{{ loop.index }}. {{ sector.sector_name }}**: **{{ sector.flow_status }}** پول با ارزش **{{ sector.flow_value_text }}**
+{% endfor %}
+{% else %}
+- **توجه:** اطلاعات عملکرد صنایع برتر برای امروز در دسترس نیست.
+{% endif %}
 
 ---
 
@@ -82,7 +89,14 @@ except Exception as e:
 
 ---
 
-{{ sector_summary }}
+**خلاصه عملکرد صنایع برتر (Top 3):**
+{% if sector_summary %}
+{% for sector in sector_summary %}
+- **{{ loop.index }}. {{ sector.sector_name }}**: **{{ sector.flow_status }}** پول با ارزش **{{ sector.flow_value_text }}**
+{% endfor %}
+{% else %}
+- **توجه:** اطلاعات عملکرد صنایع برتر برای هفته در دسترس نیست.
+{% endif %}
 
 ---
 
@@ -105,7 +119,7 @@ except Exception as e:
 def _safe_dataframe_from_orm(rows: List[Any], cols: List[str]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=cols)
-    data = [{c: getattr(r, c, None) for c in rows} for r in rows]
+    data = [{c: getattr(r, c, None) for c in cols} for r in rows]
     return pd.DataFrame(data)
 
 def _choose_price_col(df: pd.DataFrame) -> str:
@@ -154,46 +168,44 @@ def _get_formatted_symbols_text(symbols: List[Any], is_weekly: bool) -> str:
     return "\n".join(text_parts)
 
 
+# --------------------------------
+# تابع جدید برای خلاصه صنایع (با آرگومان تاریخ)
+# --------------------------------
 
-def _get_top_sectors_summary(db_session: db.session, limit: int = 5) -> List[Dict[str, Any]]:
+def _get_top_sectors_summary(db_session: db.session, analysis_jdate_str: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
-    اطلاعات صنایع برتر را به صورت یک لیست از دیکشنری‌های JSON-friendly برمی‌گرداند.
+    اطلاعات صنایع برتر را برای یک تاریخ مشخص برمی‌گرداند.
     """
+    logger.info(f"شروع بازیابی خلاصه صنایع برای تاریخ: {analysis_jdate_str}")
     try:
-        latest_date_record = db_session.query(DailySectorPerformance.jdate).order_by(DailySectorPerformance.jdate.desc()).first()
-        if not latest_date_record:
-            # 💡 برگرداندن لیست خالی در صورت عدم وجود داده تاریخ
-            return []
-
-        latest_jdate_str = latest_date_record[0]
-        top_sectors = DailySectorPerformance.query.filter_by(jdate=latest_jdate_str).order_by(DailySectorPerformance.rank.asc()).limit(limit).all()
+        # ✅ استفاده مستقیم از تاریخ تحلیل اصلی
+        top_sectors = DailySectorPerformance.query.filter_by(jdate=analysis_jdate_str).order_by(
+            DailySectorPerformance.rank.asc()
+        ).limit(limit).all()
         
         if not top_sectors:
-            # 💡 برگرداندن لیست خالی در صورت عدم وجود داده صنعت
+            logger.warning(f"❌ هیچ داده عملکرد صنعتی برای تاریخ {analysis_jdate_str} یافت نشد. لیست خالی برگردانده شد.")
             return []
             
         json_sectors_list = []
         for sector in top_sectors:
-            # 💡 اطمینان از تبدیل به float استاندارد پایتون برای JSON
+            # ... (بقیه منطق تبدیل به JSON) ...
             net_flow_billion = float(sector.net_money_flow) / 1e10 if sector.net_money_flow else 0
             
             sector_data = {
                 'sector_name': sector.sector_name,
-                'net_money_flow_billion': round(net_flow_billion, 2), # گرد کردن برای نمایش بهتر
+                'net_money_flow_billion': round(net_flow_billion, 2),
                 'flow_status': 'ورود' if net_flow_billion > 0 else ('خروج' if net_flow_billion < 0 else 'خنثی'),
                 'flow_value_text': f"{abs(net_flow_billion):.2f} م.تومان",
-                # 'rank': sector.rank # می‌توانید رتبه را نیز اضافه کنید
             }
             json_sectors_list.append(sector_data)
 
-        # 💡 برگرداندن لیست ساختاریافته به جای رشته
+        logger.info(f"✅ {len(json_sectors_list)} رکورد صنعت برای تاریخ {analysis_jdate_str} با موفقیت بازیابی شد.")
         return json_sectors_list
     
     except Exception as e:
-        logger.error(f"❌ خطا در تولید خلاصه صنایع برتر: {e}")
-        # 💡 برگرداندن لیست خالی در صورت خطای فنی
+        logger.error(f"❌ خطا در تولید خلاصه صنایع برتر برای تاریخ {analysis_jdate_str}: {e}")
         return []
-
 
 #تابع نگاشت (Mapping)
 def _map_watchlist_result_to_dict(result_obj: 'WeeklyWatchlistResult') -> Dict[str, Any]:
@@ -482,7 +494,8 @@ def _generate_daily_summary() -> Dict[str, Any]:
             setattr(symbol, 'daily_change_percent', daily_change)
         
         # 7. خلاصه صنایع برتر
-        sector_summary_list = _get_top_sectors_summary(db.session, limit=3)
+        # 💡 اصلاح: ارسال analysis_date_jdate_str به تابع تحلیل صنایع
+        sector_summary_list = _get_top_sectors_summary(db.session, analysis_date_jdate_str, limit=3) 
         
         # 8. تبدیل لیست آبجکت‌های ORM واچ‌لیست به لیست دیکشنری‌ها 
         # 🚨 رفع باگ انتقال داده: اطمینان از انتقال فیلد موقتی
@@ -505,7 +518,9 @@ def _generate_daily_summary() -> Dict[str, Any]:
             'sentiment': sentiment_analysis_result,
             'sector_summary': sector_summary_list, 
             'all_symbols': final_symbols_list, # 👈 استفاده از لیست تبدیل شده
-            'symbols_text': _get_formatted_symbols_text(weekly_watchlist_results, is_weekly=False)
+            'symbols_text': _get_formatted_symbols_text(weekly_watchlist_results, is_weekly=False),
+            # 💡 status باید در تابع اصلی نهایی‌سازی شود
+            'status': 'success'
         }
         
         return data_for_template
@@ -556,16 +571,22 @@ def _generate_weekly_summary() -> Dict[str, Any]: # 💡 تغییر نوع با�
         weekly_watchlist_records = WeeklyWatchlistResult.query.filter(WeeklyWatchlistResult.jentry_date >= start_date_j).all()
         
         # 5. خلاصه صنایع برتر (خروجی JSON List)
-        sector_summary_list = _get_top_sectors_summary(db.session, limit=3) # 💡 تغییر نام متغیر
+        # 💡 نکته: برای خلاصه هفتگی، تاریخ مشخصی ارسال نمی‌شود. آخرین تاریخ موجود استفاده می‌شود.
+        # بهتر است آخرین تاریخ معاملاتی را پیدا کنیم.
+        last_trading_day = db.session.query(HistoricalData.jdate).distinct().order_by(HistoricalData.jdate.desc()).first()
+        analysis_date_jdate_str = last_trading_day[0] if last_trading_day else jdatetime.date.today().strftime('%Y-%m-%d')
+        
+        sector_summary_list = _get_top_sectors_summary(db.session, analysis_date_jdate_str, limit=3) # 💡 ارسال آخرین تاریخ تحلیل
         
         # 6. ایجاد خروجی نهایی
         data_for_template = {
-            'jdate': jdatetime.date.today().strftime('%Y-%m-%d'),
+            'jdate': analysis_date_jdate_str,
             'indices_data': indices_for_template,
             'smart_money_flow_text': smart_money_text,
             'sector_summary': sector_summary_list, # 💡 استفاده از لیست دیکشنری‌ها
-            'all_symbols': final_symbols_list,
-            'symbols_text': _get_formatted_symbols_text(weekly_watchlist_records, is_weekly=True)
+            'all_symbols': [_map_watchlist_result_to_dict(r) for r in weekly_watchlist_records],
+            'symbols_text': _get_formatted_symbols_text(weekly_watchlist_records, is_weekly=True),
+            'status': 'success'
         }
         
         return data_for_template
@@ -579,25 +600,43 @@ def _generate_weekly_summary() -> Dict[str, Any]: # 💡 تغییر نوع با�
 # تابع اصلی سرویس
 # -----------------------------------------------------------------------------
 
-def generate_market_summary() -> str:
+def generate_market_summary() -> Dict[str, Any]:
     """
     تابع اصلی سرویس که بسته به روز هفته، تحلیل روزانه یا هفتگی را برمی‌گرداند.
+    خروجی یک دیکشنری شامل داده‌های خام و رشته تحلیل نهایی رندر شده (rendered_summary) است.
     """
     logger.info("سرویس تحلیل بازار فراخوانی شد.")
     day_type = _get_day_type()
     
-    # 💡 نکته: این تابع در حال حاضر دیکشنری برمی‌گرداند. 
-    # اگر در صورت خطا (مثل خطای پایگاه داده) یک رشته متنی برگرداند، در روت خطا ایجاد می‌شود.
-    # باید مطمئن شویم که در صورت خطا نیز یک دیکشنری استاندارد JSON-friendly برگردانده شود.
-    # اما با توجه به ساختار فعلی، فرض می‌کنیم در صورت موفقیت، دیکشنری (با انواع تبدیل شده) برمی‌گردد.
+    data = {"status": "error", "message": "نوع تحلیل برای روز جاری قابل تشخیص نیست."}
+    template_to_use = None
     
     if day_type == 'daily':
-        return _generate_daily_summary()
+        data = _generate_daily_summary()
+        template_to_use = daily_template
     elif day_type == 'weekly':
-        return _generate_weekly_summary()
+        data = _generate_weekly_summary()
+        template_to_use = weekly_template
     elif day_type == 'no_analysis_day':
         logger.info("امروز پنجشنبه است؛ تحلیل بازار منتشر نمی‌شود.")
-        # بازگرداندن یک دیکشنری استاندارد JSON برای روزهای غیرمعاملاتی
-        return {"status": "info", "message": "در روز پنجشنبه، بازار سرمایه فعال نیست و تحلیل روزانه منتشر نمی‌شود."}
+        data = {"status": "info", "message": "در روز پنجشنبه، بازار سرمایه فعال نیست و تحلیل روزانه منتشر نمی‌شود."}
     
-    return {"status": "error", "message": "نوع تحلیل برای روز جاری قابل تشخیص نیست."}
+    # 💡 مرحله نهایی: رندر کردن قالب و افزودن به دیکشنری خروجی
+    if template_to_use and data.get("status") in ['success', 'render_error']:
+        try:
+            # 1. اطمینان از وجود 'symbols_text' برای رندرینگ (به خصوص در weekly)
+            if 'symbols_text' not in data and 'all_symbols' in data:
+                 data['symbols_text'] = _get_formatted_symbols_text(data['all_symbols'], is_weekly=(day_type == 'weekly'))
+                 
+            # 2. رندر کردن محتوا و ذخیره در فیلد جدید
+            data['rendered_summary'] = template_to_use.render(data)
+            data['status'] = 'success' # در صورت موفقیت‌آمیز بودن رندرینگ
+            
+        except Exception as e:
+            logger.error(f"❌ خطای رندر کردن قالب Jinja2 برای تحلیل {day_type}: {e}", exc_info=True)
+            # اگر رندر شکست خورد، اطلاعات خام را نگه دارید و یک پیام خطا اضافه کنید
+            data['rendered_summary'] = f"❌ خطای رندر کردن گزارش: {e}"
+            data['status'] = 'render_error'
+
+    # بازگشت دیکشنری داده خام به همراه رشته رندر شده
+    return data
