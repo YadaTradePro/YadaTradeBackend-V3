@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
+from extensions import db
 import jdatetime
 import logging
 import socket
@@ -9,15 +10,39 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required
 from requests.exceptions import ConnectionError, Timeout
 
-# وارد کردن سرویس‌های داده جدید
+
+
+# وارد کردن ابزارهای مورد نیاز
 from services.index_data_fetcher import get_market_indices
 from services.global_commodities_data import fetch_global_commodities
+from services import market_analysis_service # برای Market Summary
+from services.index_data_processor import store_market_indices_data # ✅ NEW: برای ذخیره داده‌های شاخص
+from services.sector_analysis_service import run_daily_sector_analysis
 
 # تنظیم لاگینگ
 logger = logging.getLogger(__name__)
 
+#_____________________________________________
 # --- تعریف namespace و مدل‌ها برای Swagger UI ---
+#______________________________________________
+
+
 market_overview_ns = Namespace('market-overview', description='Market overview data')
+
+#______________________________________________
+
+
+# ✅ مدل برای پاسخ Market Summary
+market_summary_model = market_overview_ns.model('MarketSummary', {
+    'summary_report': fields.Raw(description='Structured daily/weekly market analysis report.')
+})
+
+# ✅ مدل برای پاسخ IndexUpdate
+index_update_model = market_overview_ns.model('IndexUpdateStatus', {
+    'success': fields.Boolean(description='True if the operation was successful.'),
+    'message': fields.String(description='Status or error message.')
+})
+
 
 # مدل داده برای TGJU
 tgju_data_model = market_overview_ns.model('TGJUData', {
@@ -171,3 +196,95 @@ class MarketOverviewResource(Resource):
             overview_data["global_commodities"] = {"error": "Failed to fetch global commodities data."}
 
         return overview_data, 200
+
+
+
+@market_overview_ns.route('/summary')
+class MarketSummaryResource(Resource):
+    @market_overview_ns.doc(security='Bearer Auth')
+    @jwt_required()
+    @market_overview_ns.marshal_with(market_summary_model) # از مدل جدید استفاده می‌کنیم
+    def get(self):
+        """
+        Generates and returns a structured summary of the market analysis (daily/weekly report).
+        """
+        current_app.logger.info("API request for market summary.")
+        
+        # فراخوانی تابع سرویس از market_analysis_service
+        # فرض می‌شود که این سرویس در market_analysis_service قرار دارد.
+        try:
+            summary_data = market_analysis_service.generate_market_summary()
+            current_app.logger.info("Market summary generated successfully.")
+            return summary_data, 200
+        except Exception as e:
+            current_app.logger.error(f"Error generating market summary: {e}", exc_info=True)
+            return {"error": "Failed to generate market summary report."}, 500
+
+
+
+
+@market_overview_ns.route('/indices-update')
+class IndexDataProcessorResource(Resource):
+    @market_overview_ns.doc(security='Bearer Auth', 
+                            description='Triggers a fetch and Upsert operation for Iran Bourse indices to DailyIndexData table.')
+    @jwt_required()
+    @market_overview_ns.marshal_with(index_update_model)
+    def post(self):
+        """
+        واکشی داده‌های شاخص بورس از منابع خارجی و ذخیره/بروزرسانی آنها در جدول DailyIndexData.
+        این Endpoint برای تضمین به‌روز بودن داده‌های مورد نیاز Market Summary استفاده می‌شود.
+        """
+        try:
+            # 💡 فراخوانی تابع سرویس با استفاده از session دیتابیس
+            success = store_market_indices_data(db.session)
+            
+            if success:
+                return {
+                    "success": True,
+                    "message": "✅ داده‌های شاخص بازار با موفقیت واکشی، پردازش و در دیتابیس ذخیره/بروزرسانی شدند."
+                }, 200
+            else:
+                return {
+                    "success": False,
+                    "message": "❌ عملیات ذخیره داده‌های شاخص ناموفق بود. جزئیات بیشتر در لاگ‌ها."
+                }, 500
+        except Exception as e:
+            logger.error(f"❌ خطای حین اجرای عملیات ذخیره شاخص‌ها: {e}", exc_info=True)
+            db.session.rollback() # اطمینان از Rollback در صورت خطای کلی
+            return {
+                "success": False,
+                "message": f"❌ خطای غیرمنتظره: {str(e)}"
+            }, 500
+
+
+
+
+
+# --- منطق Endpoint 4: Sector Performance Processor
+@market_overview_ns.route('/sector-performance-update')
+class SectorPerformanceProcessorResource(Resource):
+    @market_overview_ns.doc(security='Bearer Auth', 
+                            description='Calculates and stores the daily sector performance analysis.')
+    @jwt_required()
+    @market_overview_ns.marshal_with(index_update_model) # استفاده مجدد از مدل IndexUpdateStatus
+    def post(self):
+        """
+        اجرای تحلیل عملکرد صنایع بر اساس ارزش معاملات و جریان پول برای ۵ روز اخیر و ذخیره نتایج.
+        """
+        logger.info("⚡️ درخواست API برای به‌روزرسانی عملکرد روزانه صنایع دریافت شد.")
+        try:
+            # فراخوانی تابع سرویس که محاسبات و ذخیره‌سازی را انجام می‌دهد
+            run_daily_sector_analysis() # این تابع مستقیماً با db.session کار می‌کند
+            
+            return {
+                "success": True,
+                "message": "✅ تحلیل و رتبه‌بندی عملکرد صنایع با موفقیت انجام و ذخیره شد."
+            }, 200
+        except Exception as e:
+            logger.error(f"❌ خطای حین اجرای عملیات تحلیل صنایع: {e}", exc_info=True)
+            # Rollback در خود سرویس تحلیل مدیریت می‌شود، اما برای اطمینان می‌توان اینجا هم افزود
+            # db.session.rollback() 
+            return {
+                "success": False,
+                "message": f"❌ خطای غیرمنتظره در تحلیل صنایع: {str(e)}"
+            }, 500
