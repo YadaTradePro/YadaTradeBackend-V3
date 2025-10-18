@@ -9,12 +9,40 @@ import logging
 from sqlalchemy import func, and_
 from typing import Optional, Tuple, List, Dict
 
-# Import utility functions
-# فرض شده است که این توابع در services/technical_analysis_utils.py موجودند
-from services.technical_analysis_utils import get_today_jdate_str, convert_gregorian_to_jalali, get_last_market_day_date 
+# Import utility functions (FIX: Removed the missing function 'get_last_market_day_date')
+from services.technical_analysis_utils import get_today_jdate_str, convert_gregorian_to_jalali 
 
 logger = logging.getLogger(__name__)
 SIGNAL_SOURCE_WATCHLIST = 'WeeklyWatchlistService'
+
+# --- Helper function for market date determination (FIX for missing function) ---
+def _get_last_market_day_date_gregorian(current_date: date) -> date:
+    """
+    Returns the last market day (non-Thursday/Friday) on or before current_date.
+    For Iran: Skips Thu(3)/Fri(4); assumes Sat-Wed open. Max 14-day lookback for long holidays.
+    Future: Integrate variable holidays via calendar or price check.
+    """
+    day = current_date
+    max_lookback = 14  # Extended for safety (e.g., Nowruz holidays)
+    
+    for i in range(max_lookback):
+        # Skip fixed holidays: Thu=3, Fri=4
+        if day.weekday() in (3, 4):
+            day -= timedelta(days=1)
+            logger.debug(f"Skipped holiday {day + timedelta(days=1)} (weekday {day.weekday()})")
+            continue
+        # Future: Add variable holidays check (e.g., from API/calendar)
+        # if is_variable_holiday(day): day -= timedelta(days=1); continue
+        
+        # Validate with price data (optional, but recommended)
+        # if not has_eod_price(day): day -= timedelta(days=1); continue
+        
+        logger.debug(f"Found market day: {day} (weekday {day.weekday()})")
+        return day
+    
+    # Fallback: Conservative back
+    logger.warning(f"Max lookback reached; fallback to {current_date - timedelta(days=1)}")
+    return current_date - timedelta(days=1)
 
 # --- Helper functions for safe date/datetime formatting and data fetching ---
 def safe_date_format(date_obj, fmt='%Y-%m-%d'):
@@ -65,11 +93,11 @@ def close_and_evaluate_weekly_signals(days_to_lookback: int = 7) -> Tuple[bool, 
     start_date_greg = today_greg - timedelta(days=days_to_lookback)
     start_jdate_str = convert_gregorian_to_jalali(start_date_greg)
     
-    # تاریخ خروج (بستن سیگنال) - آخرین روز معاملاتی یا امروز
-    exit_date_greg = today_greg
-    exit_jdate_str = get_today_jdate_str()
+    # تاریخ خروج (بستن سیگنال) - آخرین روز معاملاتی یا امروز (FIX: Use last market day for accuracy)
+    exit_date_greg = _get_last_market_day_date_gregorian(today_greg)
+    exit_jdate_str = convert_gregorian_to_jalali(exit_date_greg)
     
-    logger.info(f"Searching for active signals entered since: {start_jdate_str}")
+    logger.info(f"Searching for active signals entered since: {start_jdate_str}. Exit Date set to: {exit_jdate_str}")
     
     # 1. Fetch relevant active signals from WeeklyWatchlistResult
     active_results = WeeklyWatchlistResult.query.filter(
@@ -434,8 +462,10 @@ def get_detailed_signals_performance(status_filter: Optional[str] = None, period
     if period_filter == 'previous_week':
         # فرض: هفته قبلی از 14 روز قبل شروع و در 7 روز قبل به اتمام رسیده است.
         today_greg = jdatetime.date.today().togregorian()
-        end_date_greg = today_greg - timedelta(days=7)
-        start_date_greg = today_greg - timedelta(days=14)
+        exit_date_greg = _get_last_market_day_date_gregorian(today_greg) # استفاده از آخرین روز معاملاتی برای مرجع
+
+        end_date_greg = exit_date_greg - timedelta(days=7)
+        start_date_greg = exit_date_greg - timedelta(days=14)
 
         end_jdate_str = convert_gregorian_to_jalali(end_date_greg)
         start_jdate_str = convert_gregorian_to_jalali(start_date_greg)
@@ -453,9 +483,9 @@ def get_detailed_signals_performance(status_filter: Optional[str] = None, period
     
     # Filter only closed signals unless an explicit status is requested
     if not status_filter:
-         query = query.filter(
-            SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired'])
-        )
+          query = query.filter(
+              SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired'])
+          )
 
     signals = query.order_by(SignalsPerformance.exit_date.desc(), SignalsPerformance.created_at.desc()).all()
 
