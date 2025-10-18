@@ -21,7 +21,6 @@ import datetime
 
 from werkzeug.exceptions import HTTPException
 
-from services import market_analysis_service
 from services.weekly_watchlist_service import (
     _get_symbol_analysis_data, 
     _calculate_processed_metrics,
@@ -649,27 +648,6 @@ class CombinedAnalysisResource(Resource):
         except Exception as e_outer:
             logger.error(f"❌ Critical error in combined-analysis endpoint: {e_outer}")
             return {"status": "error", "message": str(e_outer)}, 500
-
-
-
-
-# Market Summary
-@data_ns.route('/market-summary')
-class MarketSummaryResource(Resource):
-    def get(self):
-        """
-        Generates and returns a structured summary of the market analysis.
-        Provides a daily or weekly report in JSON format.
-        """
-        current_app.logger.info("API request for market summary.")
-        
-        # ✅ این تابع اکنون یک دیکشنری کامل (نه فقط متن) برمی‌گرداند
-        summary_data = market_analysis_service.generate_market_summary()
-        
-        # ✅ دیکشنری را مستقیماً برگردانید. 
-        # Flask-RESTX به صورت خودکار آن را به JSON تبدیل می‌کند.
-        return summary_data, 200
-
 
 
 # ---------------------------
