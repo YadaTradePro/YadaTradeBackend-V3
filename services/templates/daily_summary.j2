@@ -14,7 +14,14 @@
 
 ---
 
-{{ sector_summary }}
+**خلاصه عملکرد صنایع برتر (Top 3):**
+{% if sector_summary %}
+{% for sector in sector_summary %}
+- **{{ loop.index }}. {{ sector.sector_name }}**: **{{ sector.flow_status }}** پول با ارزش **{{ sector.flow_value_text }}**
+{% endfor %}
+{% else %}
+- **توجه:** اطلاعات عملکرد صنایع برتر برای امروز در دسترس نیست.
+{% endif %}
 
 ---
 
@@ -24,3 +31,4 @@
 {% else %}
 - امروز نماد جدیدی در لیست منتخب شناسایی نشد.
 {% endif %}
+"""
