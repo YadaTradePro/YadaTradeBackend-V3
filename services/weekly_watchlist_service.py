@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from models import DailySectorPerformance
 from typing import List, Dict, Tuple, Optional # NEW: Added for professional type hinting
 import time
-
+from sqlalchemy import desc
 
 # NEW: Import for market sentiment analysis
 from services.index_data_fetcher import get_market_indices
@@ -237,6 +237,7 @@ def _get_market_sentiment() -> str:
     except Exception as e:
         logger.error(f"Error fetching market sentiment from DB: {e}, defaulting to Neutral")
         return "Neutral"
+
 
 # --- REVISED: Filter Functions ---
 def _check_market_condition_filters(hist_df, tech_df):
@@ -1044,3 +1045,148 @@ def get_weekly_watchlist_results(jdate_str: Optional[str] = None):
         "top_watchlist_stocks": output_stocks,
         "last_updated": jdate_str
     }
+
+
+
+
+# [... انتهای فایل weekly_watchlist_service.py ...]
+
+def _get_symbol_analysis_data(symbol_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[FundamentalData], Optional[CandlestickPatternDetection], Optional[ComprehensiveSymbolData]]:
+    """
+    واکشی تمام داده‌های مورد نیاز (با تاریخچه کافی) برای تحلیل یک نماد.
+    """
+    # واکشی داده‌های تاریخی و تکنیکال با تاریخچه کافی برای محاسبات
+    today_greg = datetime.now().date()
+    lookback_greg = today_greg - timedelta(days=TECHNICAL_DATA_LOOKBACK_DAYS * 2) # [cite: 2]
+    lookback_jdate_str = convert_gregorian_to_jalali(lookback_greg)
+
+    hist_records = HistoricalData.query.filter(
+        HistoricalData.symbol_id == symbol_id,
+        HistoricalData.jdate >= lookback_jdate_str
+    ).order_by(HistoricalData.jdate.asc()).all()
+    # [cite: 96] (مشابه واکشی دسته‌ای)
+    hist_df = pd.DataFrame([h.__dict__ for h in hist_records]).drop(columns=['_sa_instance_state'], errors='ignore')
+    
+    tech_records = TechnicalIndicatorData.query.filter(
+        TechnicalIndicatorData.symbol_id == symbol_id,
+        TechnicalIndicatorData.jdate >= lookback_jdate_str
+    ).order_by(TechnicalIndicatorData.jdate.asc()).all()
+    tech_df = pd.DataFrame([t.__dict__ for t in tech_records]).drop(columns=['_sa_instance_state'], errors='ignore')
+
+    # واکشی داده‌های فاندامنتال (آخرین رکورد)
+    fundamental_rec = FundamentalData.query.filter(
+        FundamentalData.symbol_id == symbol_id
+    ).order_by(FundamentalData.jdate.desc()).first() # [cite: 97]
+
+    # واکشی الگوی کندلی امروز
+    today_jdate = get_today_jdate_str() # [cite: 97]
+    pattern_rec = CandlestickPatternDetection.query.filter(
+        CandlestickPatternDetection.symbol_id == symbol_id,
+        CandlestickPatternDetection.jdate == today_jdate
+    ).first() # [cite: 97]
+    
+    # واکشی اطلاعات پایه نماد (برای نام و صنعت)
+    symbol_info = ComprehensiveSymbolData.query.get(symbol_id) # [cite: 93]
+
+    return hist_df, tech_df, fundamental_rec, pattern_rec, symbol_info
+
+
+def _calculate_processed_metrics(
+    hist_df: pd.DataFrame, 
+    tech_df: pd.DataFrame, 
+    fundamental_rec: Optional[FundamentalData], 
+    pattern_rec: Optional[CandlestickPatternDetection], 
+    symbol_info: Optional[ComprehensiveSymbolData],
+    leading_sectors: set
+) -> dict:
+    """
+    محاسبه فیلدهای 'processed' بر اساس منطق weekly_watchlist_service.
+    """
+    
+    # --- مرحله ۱: اجرای تمام فیلترهای موجود ---
+    all_satisfied_filters = []
+    all_reason_parts = {}
+
+    def run_check(check_func, *args):
+        # بررسی اینکه تابع و آرگومان‌ها معتبر باشند
+        if not all(arg is not None for arg in args) and check_func not in [_check_candlestick_filters, _check_fundamental_filters]:
+             return
+        try:
+            filters, reasons = check_func(*args)
+            all_satisfied_filters.extend(filters)
+            all_reason_parts.update(reasons)
+        except Exception as e:
+            logger.warning(f"Warning during metric calculation ({check_func.__name__}): {e}")
+
+    # اطمینان از وجود داده‌های کافی
+    if not is_data_sufficient(hist_df, MIN_REQUIRED_HISTORY_DAYS): # [cite: 43-45]
+        return {"error": f"Insufficient history ({len(hist_df)} < {MIN_REQUIRED_HISTORY_DAYS})"} # [cite: 101]
+
+    last_close_series = _get_close_series_from_hist_df(hist_df) # [cite: 31, 101]
+    entry_price = float(last_close_series.iloc[-1]) if not last_close_series.empty else 0
+    technical_rec = tech_df.iloc[-1] if not tech_df.empty else None # [cite: 103]
+
+    # اجرای فیلترها با استفاده از توابع موجود در همین فایل
+    run_check(_check_sector_strength_filter, getattr(symbol_info, 'sector_name', ''), leading_sectors) # [cite: 82, 103]
+    run_check(_check_technical_filters, hist_df, tech_df) # [cite: 54, 104]
+    run_check(_check_market_condition_filters, hist_df, tech_df) # [cite: 37, 104]
+    run_check(_check_static_levels_filters, technical_rec, entry_price) # [cite: 82, 104]
+    run_check(_check_fundamental_filters, fundamental_rec) # [cite: 59, 104]
+    run_check(_check_money_flow_and_advanced_ratios, hist_df, tech_df) # [cite: 74, 104]
+    run_check(_check_smart_money_filters, hist_df) # [cite: 64, 104]
+    run_check(_check_power_thrust_signal, hist_df, last_close_series) # [cite: 68, 104]
+    run_check(_check_candlestick_filters, pattern_rec) # [cite: 73, 104]
+    
+    # --- مرحله ۲: محاسبه امتیازات بر اساس FILTER_WEIGHTS ---
+    trend_score, value_score, flow_score, risk_penalty, total_score = 0, 0, 0, 0, 0
+
+    # تعریف کلیدهای هر دسته بر اساس FILTER_WEIGHTS
+    trend_keys = ["RSI_Positive_Divergence", "Resistance_Broken", "Static_Resistance_Broken", "Squeeze_Momentum_Fired_Long", "Stochastic_Bullish_Cross_Oversold", "Consolidation_Breakout_Candidate", "Bollinger_Lower_Band_Touch", "MACD_Bullish_Cross_Confirmed", "HalfTrend_Buy_Signal", "Price_Above_SMA50"] # [cite: 3-18]
+    value_keys = ["Reasonable_PE", "Fundamental_PE_vs_Group", "Reasonable_PS", "Positive_EPS"] # [cite: 18-22]
+    flow_keys = ["Power_Thrust_Signal", "Positive_Real_Money_Flow_Trend_10D", "Heavy_Individual_Buy_Pressure", "High_Volume_On_Up_Day", "Advanced_Strong_Real_Buyer_Ratio", "Advanced_Volume_Surge_Ratio"] # [cite: 2, 12-14, 16, 23-24]
+    risk_keys = ["RSI_Is_Overbought", "Price_Too_Stretched_From_SMA50", "Negative_Real_Money_Flow_Trend_10D"] # [cite: 29-31]
+    
+    # استفاده از دیکشنری وزن‌های شما 
+    for f in set(all_satisfied_filters): # [cite: 107]
+        weight = FILTER_WEIGHTS.get(f, {}).get('weight', 0)
+        total_score += weight
+        
+        if f in trend_keys: trend_score += weight
+        elif f in value_keys: value_score += weight
+        elif f in flow_keys: flow_score += weight
+        elif f in risk_keys: risk_penalty += weight # [cite: 29-31]
+
+    # --- مرحله ۳: ساخت خروجی نهایی 'processed' ---
+    
+    if flow_score >= 5: flow_signal = "Strong Bullish"
+    elif flow_score >= 2: flow_signal = "Bullish"
+    elif risk_penalty <= -2 and flow_score <= 0: flow_signal = "Bearish"
+    else: flow_signal = "Neutral"
+
+    if total_score >= 9: overall_signal = "Strong Buy"
+    elif total_score >= 7: overall_signal = "Buy"
+    elif total_score <= 3 or risk_penalty <= -3: overall_signal = "Sell / Risky"
+    else: overall_signal = "Hold"
+
+    target_upside_percent = None
+    res_level = _get_attr_safe(technical_rec, 'static_resistance_level') # [cite: 83-90]
+    if res_level and res_level > 0 and entry_price > 0:
+        target_upside_percent = ((res_level - entry_price) / entry_price) * 100
+    
+    reasons_summary = []
+    for key, messages in all_reason_parts.items():
+        reasons_summary.extend(messages)
+    
+    processed_data = {
+        "trend_score": round(trend_score, 1),
+        "value_score": round(value_score, 1),
+        "flow_signal": flow_signal,
+        "flow_score": round(flow_score, 1),
+        "risk_penalty": round(risk_penalty, 1),
+        "total_score": round(total_score, 1),
+        "overall_signal": overall_signal,
+        "target_upside_percent": round(target_upside_percent, 2) if target_upside_percent is not None else None,
+        "reasons_summary": reasons_summary[:5] # محدود کردن به ۵ دلیل برتر
+    }
+    
+    return processed_data
