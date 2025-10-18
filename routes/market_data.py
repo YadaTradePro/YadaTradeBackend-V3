@@ -31,11 +31,75 @@ market_overview_ns = Namespace('market-overview', description='Market overview d
 
 #______________________________________________
 
+# --- مدل‌های تو در تو (Nested Models) ---
 
-# ✅ مدل برای پاسخ Market Summary
-market_summary_model = market_overview_ns.model('MarketSummary', {
-    'summary_report': fields.Raw(description='Structured daily/weekly market analysis report.')
+# 1. مدل وضعیت شاخص‌ها
+index_sentiment_model = market_overview_ns.model('IndexSentimentModel', {
+    'value': fields.Raw(description='مقدار شاخص (عددی یا N/A)'), 
+    'status': fields.String(description='وضعیت شاخص (صعودی/نزولی)'),
 })
+
+# 2. مدل جریان پول
+money_flow_model = market_overview_ns.model('MoneyFlowSentimentModel', {
+    'net_value_billion_toman': fields.Float(description='ارزش خالص جریان پول حقیقی (میلیارد تومان)'),
+    'status_text': fields.String(description='شرح وضعیت جریان پول'),
+})
+
+# 3. مدل سرانه و کلیت بازار
+per_capita_model = market_overview_ns.model('PerCapitaSentimentModel', {
+    'buy': fields.Float(description='سرانه خرید (میلیون تومان)'),
+    'sell': fields.Float(description='سرانه فروش (میلیون تومان)'),
+    'status_text': fields.String(description='شرح قدرت خریدار/فروشنده'),
+})
+market_breadth_model = market_overview_ns.model('MarketBreadthModel', {
+    'positive_symbols': fields.Integer(description='تعداد نمادهای مثبت'),
+    'negative_symbols': fields.Integer(description='تعداد نمادهای منفی'),
+})
+trade_value_model = market_overview_ns.model('TradeValueModel', {
+    'retail': fields.Float(description='ارزش معاملات خرد'),
+})
+
+# 4. مدل تجمیعی سنتیمنت
+sentiment_model = market_overview_ns.model('MarketSentimentModel', {
+    'total_index': fields.Nested(index_sentiment_model, description='تحلیل شاخص کل'),
+    'equal_weighted_index': fields.Nested(index_sentiment_model, description='تحلیل شاخص هم‌وزن'),
+    'money_flow': fields.Nested(money_flow_model, description='تحلیل جریان پول حقیقی'),
+    'per_capita': fields.Nested(per_capita_model, description='تحلیل سرانه خرید و فروش'),
+    'market_breadth': fields.Nested(market_breadth_model, description='تحلیل عرض بازار'),
+    'trade_value': fields.Nested(trade_value_model, description='ارزش معاملات خرد'),
+})
+
+# 5. مدل خلاصه صنعت
+sector_summary_model = market_overview_ns.model('SectorSummaryModel', {
+    'sector_name': fields.String(description='نام صنعت'),
+    'flow_status': fields.String(description='وضعیت جریان پول (ورود/خروج/خنثی)'),
+    'flow_value_text': fields.String(description='متن ارزش جریان پول'),
+    'net_money_flow_billion': fields.Float(description='جریان خالص پول به میلیارد تومان'),
+})
+
+# 6. مدل نمادهای واچ‌لیست (به اختصار)
+symbol_model = market_overview_ns.model('SymbolWatchlistModel', {
+    'symbol_name': fields.String(description='نام نماد'),
+    'daily_change_percent': fields.Float(description='درصد تغییر روزانه نماد'),
+    'status': fields.String(description='وضعیت نماد (فعال/خروج)'),
+    # ... سایر فیلدهای نمادهای فعال
+})
+
+
+# --- مدل اصلی خروجی API (market_summary_model) ---
+market_summary_model = market_overview_ns.model('MarketSummaryOutputModel', {
+    'status': fields.String(description='وضعیت تولید گزارش (success/error/render_error)'),
+    'jdate': fields.String(description='تاریخ شمسی گزارش'),
+    # 💥 کلید اصلی که متن نهایی را نگه می‌دارد
+    'rendered_summary': fields.String(description='**گزارش متنی نهایی رندر شده**', required=True), 
+    
+    # فیلدهای داده خام که ممکن است در فرانت‌اند استفاده شوند
+    'symbols_text': fields.String(description='خلاصه متنی نمادها'),
+    'sentiment': fields.Nested(sentiment_model, description='داده‌های خام تحلیل سنتیمنت بازار'),
+    'sector_summary': fields.List(fields.Nested(sector_summary_model), description='خلاصه عملکرد صنایع برتر'),
+    'all_symbols': fields.List(fields.Nested(symbol_model), description='لیست کامل نمادهای واچ‌لیست فعال'),
+})
+
 
 # ✅ مدل برای پاسخ IndexUpdate
 index_update_model = market_overview_ns.model('IndexUpdateStatus', {
@@ -203,21 +267,26 @@ class MarketOverviewResource(Resource):
 class MarketSummaryResource(Resource):
     @market_overview_ns.doc(security='Bearer Auth')
     @jwt_required()
-    @market_overview_ns.marshal_with(market_summary_model) # از مدل جدید استفاده می‌کنیم
+    # 💡 این دکوریتور، دیکشنری برگشتی تابع را به مدل market_summary_model تبدیل می‌کند
+    @market_overview_ns.marshal_with(market_summary_model) 
     def get(self):
         """
         Generates and returns a structured summary of the market analysis (daily/weekly report).
         """
         current_app.logger.info("API request for market summary.")
         
-        # فراخوانی تابع سرویس از market_analysis_service
-        # فرض می‌شود که این سرویس در market_analysis_service قرار دارد.
+        # فراخوانی تابع سرویس که دیکشنری داده‌های جامع را برمی‌گرداند
         try:
             summary_data = market_analysis_service.generate_market_summary()
             current_app.logger.info("Market summary generated successfully.")
-            return summary_data, 200
+            
+            # 🔑 بازگشت: اگر marshaling موفق باشد، 200 برمی‌گردد.
+            # چون خروجی summary_data دقیقاً مطابق مدل است، marshal_with آن را به JSON تبدیل می‌کند.
+            return summary_data
+            
         except Exception as e:
             current_app.logger.error(f"Error generating market summary: {e}", exc_info=True)
+            # 🚨 در صورت بروز خطا، یک دیکشنری استاندارد خطا (که marshal نمی‌شود) به همراه کد 500 برمی‌گردانیم
             return {"error": "Failed to generate market summary report."}, 500
 
 
