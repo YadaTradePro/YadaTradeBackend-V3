@@ -21,17 +21,10 @@ import datetime
 
 from werkzeug.exceptions import HTTPException
 
-from services.weekly_watchlist_service import (
-    _get_symbol_analysis_data, 
-    _calculate_processed_metrics,
-    _get_leading_sectors # [cite: 80]
-)
-
-
 # =========================
 # Namespace برای Flask-RESTX
 # =========================
-data_ns = Namespace('data', description='عملیات واکشی داده، تحلیل و پیش‌بینی')
+data_ns = Namespace('data', description='Data Fetching, Analysing and ML Predictions')
 
 # =========================
 # توابع کمکی
@@ -173,68 +166,6 @@ ml_prediction_model = data_ns.model('MLPredictionModel', {
     'updated_at': fields.String
 })
 
-# =================================================================================
-# Combined Analysis Models
-# =================================================================================
-raw_historical_model = data_ns.model('RawHistorical', {
-    'jdate': fields.String,
-    'close': fields.Float,
-    'volume': fields.Float,
-    'plp': fields.Float,
-    'buy_i_volume': fields.Float,
-    'sell_i_volume': fields.Float
-})
-
-raw_fundamental_model = data_ns.model('RawFundamental', {
-    'jdate': fields.String,
-    'eps': fields.Float,
-    'pe': fields.Float,
-    'group_pe_ratio': fields.Float,
-    'real_power_ratio': fields.Float
-})
-
-raw_technical_model = data_ns.model('RawTechnical', {
-    'jdate': fields.String,
-    'RSI': fields.Float,
-    'SMA_50': fields.Float,
-    'MACD': fields.Float,
-    'MACD_Signal': fields.Float,
-    'ATR': fields.Float
-})
-
-raw_candlestick_model = data_ns.model('RawCandlestick', {
-    'jdate': fields.String,
-    'pattern_name': fields.String
-})
-
-processed_model = data_ns.model('ProcessedMetrics', {
-    'trend_score': fields.Float,
-    'value_score': fields.Float,
-    'flow_signal': fields.String,
-    'flow_score': fields.Float,
-    'risk_penalty': fields.Float,
-    'total_score': fields.Float,
-    'overall_signal': fields.String,
-    'target_upside_percent': fields.Float,
-    'reasons_summary': fields.List(fields.String)
-})
-
-symbol_analysis_profile_model = data_ns.model('SymbolAnalysisProfile', {
-    'symbol_id': fields.String(required=True),
-    'symbol_name': fields.String,
-    'company_name': fields.String,
-    'sector_name': fields.String,
-    'raw_historical': fields.Nested(raw_historical_model),
-    'raw_fundamental': fields.Nested(raw_fundamental_model),
-    'raw_technical': fields.Nested(raw_technical_model),
-    'raw_candlestick': fields.Nested(raw_candlestick_model),
-    'processed': fields.Nested(processed_model)
-})
-
-combined_analysis_response_model = data_ns.model('CombinedAnalysisResponse', {
-    'status': fields.String(example="success"),
-    'data': fields.List(fields.Nested(symbol_analysis_profile_model))
-})
 
 
 # =================================================================================
@@ -267,14 +198,6 @@ historical_data_parser.add_argument('end_date', type=str, help='تاریخ پا�
 ml_generate_parser = reqparse.RequestParser()
 ml_generate_parser.add_argument('prediction_date', type=str, required=False, help='تاریخ میلادی برای تولید پیش‌بینی (YYYY-MM-DD)')
 ml_generate_parser.add_argument('prediction_period_days', type=int, default=7, help='دوره پیش‌بینی به روز')
-
-
-# ← اضافه: Parser برای اندپوینت combined analysis (list of symbols)
-combined_analysis_parser = reqparse.RequestParser()
-combined_analysis_parser.add_argument(
-    'symbols', type=str, required=True,
-    help='Comma-separated list of symbol names (e.g., "خودرو,خساپا")', action='split'
-)
 
 
 # =================================================================================
@@ -530,124 +453,6 @@ class StockHistoryResource(Resource):
             # برای هر خطای غیرمنتظره دیگر (مثل خطای دیتابیس یا منطقی)
             current_app.logger.error(f"An unexpected critical error occurred for {symbol_input}: {e}", exc_info=True)
             data_ns.abort(500, f"An unexpected critical error occurred: {str(e)}")
-
-
-
-
-
-# ← اضافه: اندپوینت GET برای combined analysis
-@data_ns.route('/combined-analysis')
-class CombinedAnalysisResource(Resource):
-
-    @data_ns.doc('get_combined_analysis')
-    @data_ns.expect(combined_analysis_parser)
-    @data_ns.marshal_with(combined_analysis_response_model)
-    def get(self):
-        """
-        واکشی پروفایل تحلیلی کامل (خام + پردازش‌شده) بر اساس *نام نماد*.
-        ابتدا نام نماد به ID تبدیل می‌شود تا داده‌ها از دیتابیس با دقت بالا واکشی شوند.
-        """
-        logger = logging.getLogger(__name__)
-        logger.info("🔍 [API] Fetching combined analysis profile for symbols (by name)...")
-
-        try:
-            args = combined_analysis_parser.parse_args()
-            symbol_names = args['symbols']
-
-            if not symbol_names:
-                logger.warning("No symbol names provided.")
-                return {"status": "error", "data": []}, 400
-
-            results_data = []
-
-            # --- مرحله ۱: تبدیل نام نماد به ID ---
-            symbol_mappings = {}
-            for name in symbol_names:
-                try:
-                    record = SymbolInfo.query.filter_by(symbol_name=name).first()
-                    if record:
-                        symbol_mappings[name] = record.symbol_id
-                    else:
-                        logger.warning(f"Symbol name not found in DB: {name}")
-                except Exception as e:
-                    logger.error(f"DB lookup error for {name}: {e}")
-
-            # --- مرحله ۲: تحلیل بر اساس ID ---
-            for symbol_name in symbol_names:
-                symbol_id = symbol_mappings.get(symbol_name)
-                if not symbol_id:
-                    results_data.append({
-                        "symbol_name": symbol_name,
-                        "processed": {"error": "Symbol not found"}
-                    })
-                    continue
-
-                try:
-                    hist_df, tech_df, fundamental_rec, pattern_rec, symbol_info = _get_symbol_analysis_data(symbol_id)
-
-                    if hist_df.empty or tech_df.empty or not fundamental_rec or not symbol_info:
-                        logger.warning(f"Incomplete data for {symbol_name}.")
-                        results_data.append({
-                            "symbol_id": symbol_id,
-                            "symbol_name": symbol_name,
-                            "processed": {"error": "Incomplete data for analysis"}
-                        })
-                        continue
-
-                    processed_metrics = _calculate_processed_metrics(
-                        hist_df, tech_df, fundamental_rec, pattern_rec, symbol_info, _get_leading_sectors()
-                    )
-
-                    last_hist = hist_df.iloc[-1]
-                    last_tech = tech_df.iloc[-1]
-
-                    results_data.append({
-                        "symbol_id": symbol_id,
-                        "symbol_name": symbol_name,
-                        "company_name": getattr(symbol_info, 'company_name', None),
-                        "sector_name": getattr(symbol_info, 'sector_name', None),
-                        "raw_historical": {
-                            "jdate": last_hist.get('jdate'),
-                            "close": last_hist.get('close'),
-                            "volume": last_hist.get('volume'),
-                            "plp": last_hist.get('plp'),
-                            "buy_i_volume": last_hist.get('buy_i_volume'),
-                            "sell_i_volume": last_hist.get('sell_i_volume')
-                        },
-                        "raw_fundamental": {
-                            "jdate": fundamental_rec.jdate,
-                            "eps": fundamental_rec.eps,
-                            "pe": fundamental_rec.pe,
-                            "group_pe_ratio": fundamental_rec.group_pe_ratio,
-                            "real_power_ratio": fundamental_rec.real_power_ratio
-                        },
-                        "raw_technical": {
-                            "jdate": last_tech.get('jdate'),
-                            "RSI": last_tech.get('RSI'),
-                            "SMA_50": last_tech.get('SMA_50'),
-                            "MACD": last_tech.get('MACD'),
-                            "MACD_Signal": last_tech.get('MACD_Signal'),
-                            "ATR": last_tech.get('ATR')
-                        },
-                        "raw_candlestick": {
-                            "jdate": getattr(pattern_rec, 'jdate', None),
-                            "pattern_name": getattr(pattern_rec, 'pattern_name', None)
-                        },
-                        "processed": processed_metrics
-                    })
-
-                except Exception as e_inner:
-                    logger.error(f"❌ Error in analysis for {symbol_name}: {e_inner}")
-                    results_data.append({
-                        "symbol_name": symbol_name,
-                        "processed": {"error": str(e_inner)}
-                    })
-
-            return {"status": "success", "data": results_data}, 200
-
-        except Exception as e_outer:
-            logger.error(f"❌ Critical error in combined-analysis endpoint: {e_outer}")
-            return {"status": "error", "message": str(e_outer)}, 500
 
 
 # ---------------------------
