@@ -157,11 +157,6 @@ def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int
     return atr
 
 
-
-
-
-# --- توابع اضافه شده برای سرویس Weekly Watchlist ---
-
 def calculate_smart_money_flow(df: pd.DataFrame) -> pd.DataFrame:
     """
     محاسبه معیارهای جریان پول هوشمند از داده‌های تاریخی.
@@ -197,86 +192,6 @@ def calculate_smart_money_flow(df: pd.DataFrame) -> pd.DataFrame:
         return df_copy[['jdate', 'individual_buy_power', 'individual_net_flow', 'individual_buy_per_trade', 'individual_sell_per_trade']].copy()
     else:
         return df_copy[['individual_buy_power', 'individual_net_flow', 'individual_buy_per_trade', 'individual_sell_per_trade']].copy()
-
-def check_candlestick_patterns(today_candle_data: Dict[str, Union[float, int]], 
-                              yesterday_candle_data: Dict[str, Union[float, int]], 
-                              historical_data: pd.DataFrame) -> List[str]:
-    """
-    بررسی الگوهای شمعی رایج و پیشرفته با تأیید حجم.
-    Args:
-        today_candle_data (dict): دیکشنری با 'open', 'high', 'low', 'close', 'volume' برای امروز.
-        yesterday_candle_data (dict): دیکشنری با 'open', 'high', 'low', 'close', 'volume' برای دیروز.
-        historical_data (pd.DataFrame): DataFrame کامل داده‌های تاریخی شامل 'close_price' و 'volume'.
-    Returns:
-        List[str]: لیستی از نام الگوهای شمعی شناسایی شده.
-    """
-    detected_patterns = []
-
-    if not all(k in today_candle_data and k in yesterday_candle_data for k in ['open', 'high', 'low', 'close']):
-        logger.warning("داده‌های شمعی ناقص برای بررسی الگوهای شمعی.")
-        return detected_patterns
-
-    is_in_downtrend = False
-    if 'close' in historical_data.columns and len(historical_data) >= 10:
-        recent_closes = historical_data['close'].iloc[-10:]
-        if not recent_closes.empty and recent_closes.iloc[0] > recent_closes.iloc[-1]:
-            is_in_downtrend = True
-            
-    is_in_uptrend = False
-    if 'close' in historical_data.columns and len(historical_data) >= 10:
-        recent_closes = historical_data['close'].iloc[-10:]
-        if not recent_closes.empty and recent_closes.iloc[0] < recent_closes.iloc[-1]:
-            is_in_uptrend = True
-            
-    volume_t = today_candle_data.get('volume', 0)
-    avg_volume = historical_data['volume'].iloc[-20:].mean() if 'volume' in historical_data.columns else 0
-    is_high_volume = volume_t > 1.5 * avg_volume if avg_volume > 0 else False
-    
-    open_t, high_t, low_t, close_t = today_candle_data['open'], today_candle_data['high'], today_candle_data['low'], today_candle_data['close']
-    open_y, high_y, low_y, close_y = yesterday_candle_data['open'], yesterday_candle_data['high'], yesterday_candle_data['low'], yesterday_candle_data['close']
-
-    # --- الگوی Hammer ---
-    body_t = abs(close_t - open_t)
-    range_t = high_t - low_t
-    lower_shadow_t = min(open_t, close_t) - low_t
-    upper_shadow_t = high_t - max(open_t, close_t)
-    if (range_t > 0 and body_t > 0 and body_t < (0.3 * range_t) and 
-        lower_shadow_t >= 2 * body_t and upper_shadow_t < 0.1 * body_t and 
-        is_in_downtrend):
-        detected_patterns.append("Hammer")
-
-    # --- الگوی Bullish Engulfing ---
-    if (close_y < open_y and close_t > open_t and open_t < close_y and close_t > open_y and 
-        is_in_downtrend and is_high_volume):
-        detected_patterns.append("Bullish Engulfing (با تأیید حجم)")
-
-    # --- الگوی Morning Star (نیاز به داده سه روزه) ---
-    if len(historical_data) >= 3:
-        day1 = historical_data.iloc[-3]
-        day2 = historical_data.iloc[-2]
-        day3 = historical_data.iloc[-1]
-        
-        if day1['close'] < day1['open']:
-            if abs(day2['close'] - day2['open']) < (day2['high'] - day2['low']) * 0.2:
-                if (day3['close'] > day3['open'] and
-                    day3['close'] > (day1['open'] + day1['close']) / 2):
-                    if is_in_downtrend:
-                        detected_patterns.append("Morning Star")
-                        
-    # --- الگوی Evening Star (نیاز به داده سه روزه) ---
-    if len(historical_data) >= 3:
-        day1 = historical_data.iloc[-3]
-        day2 = historical_data.iloc[-2]
-        day3 = historical_data.iloc[-1]
-        
-        if day1['close'] > day1['open']:
-            if abs(day2['close'] - day2['open']) < (day2['high'] - day2['low']) * 0.2:
-                if (day3['close'] < day3['open'] and
-                    day3['close'] < (day1['open'] + day1['close']) / 2):
-                    if is_in_uptrend:
-                        detected_patterns.append("Evening Star")
-
-    return detected_patterns
 
 
 
