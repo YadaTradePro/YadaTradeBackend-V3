@@ -81,10 +81,12 @@ def create_app(test_config=None):
     from routes.potential_queues import potential_queues_ns
     from routes.performance import performance_ns
     from routes.market_data import market_overview_ns
+    from routes.combined_analysis_route import SymbolAnalysis_ns
 
     # اضافه‌کردن namespace‌ها به Swagger
     api.add_namespace(auth_ns, path="/auth")
     api.add_namespace(data_ns, path="/data")  # <<< تغییر یافته
+    api.add_namespace(SymbolAnalysis_ns, path="/SymbolAnalysis") 
     api.add_namespace(market_overview_ns, path="/market-overview")
     api.add_namespace(golden_key_ns, path="/golden_key")
     api.add_namespace(weekly_watchlist_ns, path="/weekly_watchlist")
