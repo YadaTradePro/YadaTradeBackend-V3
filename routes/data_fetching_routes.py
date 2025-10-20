@@ -11,13 +11,10 @@ from flask_restx import Namespace, Resource, fields, reqparse
 from extensions import db
 from sqlalchemy.orm import sessionmaker, Session
 
-
-
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import request, current_app
 from flask_cors import cross_origin
 import datetime
-
 
 from werkzeug.exceptions import HTTPException
 
@@ -176,10 +173,11 @@ rebuild_parser = reqparse.RequestParser()
 rebuild_parser.add_argument('batch_size', type=int, default=50, help='تعداد نمادها در هر بچ پردازشی')
 rebuild_parser.add_argument('commit_batch_size', type=int, default=100, help='تعداد نمادهای پردازش‌شده قبل از هر commit')
 
+
 # پارسر برای اندپوینت‌های تحلیل که می‌توانند لیست نمادها را دریافت کنند
 analysis_parser = reqparse.RequestParser()
 analysis_parser.add_argument('limit', type=int, required=False, help='محدودیت تعداد نمادها برای پردازش')
-analysis_parser.add_argument('days_limit', type=int, required=False, help='محدودیت تعداد روزهای تاریخی برای تحلیل هر نماد')
+# 'days_limit' حذف شد زیرا سرویس‌های تحلیلی جدید داده واکشی نمی‌کنند و روی کل تاریخچه موجود کار می‌کنند.
 analysis_parser.add_argument(
     'specific_symbols',
     type=list,
@@ -206,7 +204,11 @@ ml_generate_parser.add_argument('prediction_period_days', type=int, default=7, h
 from services.data_fetcher import run_full_rebuild
 from services.fetch_latest_brsapi_eod import update_daily_eod_from_brsapi
 from services.historical_data_service import get_historical_data_for_symbol
-from services.data_processing_and_analysis import run_technical_analysis
+
+from services.data_processing_and_analysis import (
+    run_technical_analysis, 
+    run_candlestick_detection
+)
 from services.ml_prediction_service import (
     generate_and_save_predictions_for_watchlist,
     update_ml_prediction_outcomes,
@@ -283,7 +285,7 @@ class RunTechnicalAnalysisResource(Resource):
     @data_ns.expect(analysis_parser)
     def post(self):
         """
-        اجرای تحلیل تکنیکال و تشخیص الگوهای کندل برای نمادها.
+        اجرای تحلیل تکنیکال (RSI, MACD, SMA و...) برای نمادها.
         می‌تواند برای تمام نمادها یا لیست مشخصی اجرا شود.
         """
         logger = logging.getLogger(__name__)
@@ -291,11 +293,15 @@ class RunTechnicalAnalysisResource(Resource):
         session = get_session_local()
         try:
             args = analysis_parser.parse_args()
+            
+            #
+            # ===== ❗️ اصلاحیه ۳: به‌روزرسانی فراخوانی تابع =====
+            #
             processed_count, message = run_technical_analysis(
                 db_session=session,
                 limit=args.get('limit'),
-                specific_symbols_list=args.get('specific_symbols'),
-                days_limit=args.get('days_limit')
+                symbols_list=args.get('specific_symbols') # تغییر نام آرگومان
+                # 'days_limit' حذف شد چون در تابع جدید وجود ندارد
             )
             return {"status": "success", "processed_symbols": processed_count, "message": message}, 200
         except Exception as e:
@@ -304,6 +310,40 @@ class RunTechnicalAnalysisResource(Resource):
         finally:
             session.close()
 
+
+
+@data_ns.route('/analysis/candlesticks')
+class RunCandlestickDetectionResource(Resource):
+    @data_ns.doc('run_candlestick_detection')
+    @data_ns.expect(analysis_parser) # استفاده از همان پارسر
+    def post(self):
+        """
+        اجرای تشخیص الگوهای شمعی (Candlestick Patterns) برای آخرین روز.
+        نتایج در جدول CandlestickPatternDetection ذخیره/جایگزین می‌شوند.
+        """
+        logger = logging.getLogger(__name__)
+        logger.info("🕯️ [API] Running Candlestick Pattern Detection...")
+        session = get_session_local()
+        try:
+            args = analysis_parser.parse_args()
+            
+            # فراخوانی تابع جدید از سرویس
+            processed_count = run_candlestick_detection(
+                db_session=session,
+                limit=args.get('limit'),
+                symbols_list=args.get('specific_symbols')
+            )
+            
+            return {
+                "status": "success", 
+                "symbols_with_patterns_found": processed_count, 
+                "message": f"Candlestick detection completed. Found patterns for {processed_count} symbols."
+            }, 200
+        except Exception as e:
+            logger.error(f"❌ Error in candlestick detection endpoint: {e}\n{traceback.format_exc()}")
+            return {"status": "error", "message": str(e)}, 500
+        finally:
+            session.close()
 
 
 # ------------------------------------------
@@ -328,14 +368,11 @@ class GenerateMLPredictionsResource(Resource):
                 prediction_period_days=args['prediction_period_days']
             )
             if success:
-                # ✅ اصلاح: حذف jsonify
                 return {"status": "success", "message": message}, 200
             else:
-                # ✅ اصلاح: حذف jsonify
                 return {"status": "error", "message": message}, 400
         except Exception as e:
             logger.error(f"❌ Error in generate-ml-predictions endpoint: {e}\n{traceback.format_exc()}")
-            # ✅ اصلاح: حذف jsonify
             return {"status": "error", "message": str(e)}, 500
 
 @data_ns.route('/ml-predictions/update-outcomes')
@@ -351,14 +388,11 @@ class UpdateMLOutcomesResource(Resource):
         try:
             success, message = update_ml_prediction_outcomes()
             if success:
-                # ✅ اصلاح: حذف jsonify
                 return {"status": "success", "message": message}, 200
             else:
-                # ✅ اصلاح: حذف jsonify
                 return {"status": "error", "message": message}, 400
         except Exception as e:
             logger.error(f"❌ Error in update-ml-outcomes endpoint: {e}\n{traceback.format_exc()}")
-            # ✅ اصلاح: حذف jsonify
             return {"status": "error", "message": str(e)}, 500
 
 @data_ns.route('/ml-predictions/all')
@@ -374,7 +408,6 @@ class GetAllMLPredictionsResource(Resource):
             return predictions, 200
         except Exception as e:
             logger.error(f"❌ Error getting all ML predictions: {e}\n{traceback.format_exc()}")
-            # ✅ اصلاح: حذف jsonify
             return {"status": "error", "message": str(e)}, 500
 
 @data_ns.route('/ml-predictions/<string:symbol_id>')
@@ -392,7 +425,6 @@ class GetSymbolMLPredictionResource(Resource):
             return {"message": f"No prediction found for symbol {symbol_id}"}, 404
         except Exception as e:
             logger.error(f"❌ Error getting ML prediction for {symbol_id}: {e}\n{traceback.format_exc()}")
-            # ✅ اصلاح: حذف jsonify
             return {"status": "error", "message": str(e)}, 500
 
 
