@@ -442,7 +442,7 @@ def check_candlestick_patterns(today_record: dict, yesterday_record: dict, histo
     prev_open = yesterday_record['open']
 
     # 1. صخره (Doji - ساده): باز شدن و بسته شدن نزدیک به هم
-    if abs(open_ - close) / (high - low) < 0.1 and (high - low) > 0:
+    if (high - low) > 1e-6 and abs(open_ - close) / (high - low) < 0.1:
         patterns.append("Doji (صخره)")
 
     # 2. چکش (Hammer - ساده): سایه پایینی بلند، بدنه کوچک در بالا
