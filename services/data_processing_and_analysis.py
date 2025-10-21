@@ -392,11 +392,15 @@ def run_candlestick_detection(
 ) -> int:
     """
     اجرای تشخیص الگوهای شمعی.
-    مدیریت Session اکنون به صورت خودکار توسط 'session_scope' انجام می‌شود.
     """
     with session_scope(external_session=db_session) as session:
         try:
             logger.info("🕯️ شروع تشخیص الگوهای شمعی...")
+            
+            # 1. 🔥 پاک کردن COMPLETE تمام داده‌های قبلی جدول
+            logger.info("🗑️ در حال پاک کردن تمام داده‌های قبلی جدول candlestick_pattern_detection...")
+            total_deleted = session.query(CandlestickPatternDetection).delete()
+            logger.info(f"✅ {total_deleted} رکورد قدیمی حذف شد.")
             
             # 🔧 استفاده از session مستقل برای یافتن نمادها
             independent_session = None
@@ -442,7 +446,6 @@ def run_candlestick_detection(
             success_count = 0
             records_to_insert = []
             processed_count = 0
-            today_jdate_str = None
 
             for symbol_id in symbol_ids_to_process:
                 try:
@@ -474,8 +477,6 @@ def run_candlestick_detection(
                     if patterns:
                         now = datetime.now()
                         current_jdate = today_record_dict['jdate']
-                        if today_jdate_str is None:
-                            today_jdate_str = current_jdate
 
                         for pattern in patterns:
                             records_to_insert.append({
@@ -485,6 +486,7 @@ def run_candlestick_detection(
                                 'created_at': now, 
                                 'updated_at': now
                             })
+                        
                         success_count += 1
                         logger.debug(f"✅ الگوهای یافت شده برای نماد {symbol_id}: {patterns}")
                     
@@ -497,24 +499,30 @@ def run_candlestick_detection(
                     
             logger.info(f"✅ تشخیص الگوهای شمعی برای {success_count} نماد (با {len(records_to_insert)} الگو) انجام شد.")
                     
-            # 3. ذخیره نتایج در دیتابیس (تراکنش یکپارچه)
+            # 3. ذخیره نتایج در دیتابیس
             if records_to_insert:
-                if not today_jdate_str:
-                    today_jdate_str = records_to_insert[0]['jdate'] 
-
-                processed_symbol_ids_set = list({record['symbol_id'] for record in records_to_insert})
+                logger.info(f"💾 در حال درج {len(records_to_insert)} رکورد جدید...")
                 
-                # ب) حذف رکوردهای قدیمی
-                logger.info(f"🗑️ در حال حذف الگوهای شمعی قبلی برای {len(processed_symbol_ids_set)} نماد در تاریخ {today_jdate_str}...")
+                # 🔍 بررسی تکراری‌ها قبل از درج
+                unique_records = {}
+                duplicates_count = 0
                 
-                session.query(CandlestickPatternDetection).filter(
-                    CandlestickPatternDetection.symbol_id.in_(processed_symbol_ids_set),
-                    CandlestickPatternDetection.jdate == today_jdate_str
-                ).delete(synchronize_session=False) 
+                for record in records_to_insert:
+                    key = (record['symbol_id'], record['jdate'], record['pattern_name'])
+                    if key in unique_records:
+                        duplicates_count += 1
+                        logger.warning(f"⚠️ رکورد تکراری شناسایی شد: {key}")
+                    else:
+                        unique_records[key] = record
                 
-                # ج) درج رکوردهای جدید
+                if duplicates_count > 0:
+                    logger.warning(f"⚠️ {duplicates_count} رکورد تکراری حذف شد.")
+                    records_to_insert = list(unique_records.values())
+                    logger.info(f"📊 پس از حذف تکراری‌ها: {len(records_to_insert)} رکورد برای درج باقی ماند.")
+                
+                # درج رکوردهای جدید
                 session.bulk_insert_mappings(CandlestickPatternDetection, records_to_insert)
-                logger.info(f"✅ {len(records_to_insert)} الگوی شمعی با موفقیت در Session درج شد.")
+                logger.info(f"✅ {len(records_to_insert)} الگوی شمعی با موفقیت درج شد.")
                 
             else:
                 logger.info("ℹ️ هیچ الگوی شمعی جدیدی یافت نشد.")
@@ -522,8 +530,9 @@ def run_candlestick_detection(
             return success_count
 
         except Exception as e:
-             logger.error(f"❌ خطای کلی در اجرای تشخیص الگوهای شمعی: {e}", exc_info=True)
-             return 0
+            logger.error(f"❌ خطای کلی در اجرای تشخیص الگوهای شمعی: {e}", exc_info=True)
+            session.rollback()
+            return 0
 
 # -----------------------------------------------------------
 # توابع Export
