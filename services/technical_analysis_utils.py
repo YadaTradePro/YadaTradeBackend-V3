@@ -413,73 +413,249 @@ def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+
 # -----------------------------------------------------------
-# توابع تشخیص الگوهای شمعی (Candlestick Pattern Detection)
+# توابع تشخیص الگوهای شمعی (Candlestick Pattern Detection) - نسخه حرفه‌ای
 # -----------------------------------------------------------
 
 def check_candlestick_patterns(today_record: dict, yesterday_record: dict, historical_df: pd.DataFrame) -> List[str]:
     """
-    تشخیص الگوهای شمعی با استفاده از داده‌های روز جاری و قبلی و کل تاریخچه (برای الگوهای چندروزه).
-
-    ورودی:
-    - today_record: دیکشنری رکورد امروز.
-    - yesterday_record: دیکشنری رکورد دیروز.
-    - historical_df: کل DataFrame تاریخی (مرتب شده بر اساس تاریخ).
-
-    خروجی: لیستی از نام الگوهای یافت‌شده.
+    تشخیص الگوهای شمعی با پیاده‌سازی حرفه‌ای و منطق بازار سرمایه.
     """
     patterns = []
-
-    # ⚠️ توجه: در واقعیت، برای تشخیص دقیق الگوها، نیاز به یک کتابخانه مثل TA-Lib یا پیاده‌سازی‌های دقیق است.
-    # در اینجا، چند الگوی ساده به عنوان نمونه پیاده‌سازی می‌شوند:
-
-    close = today_record['close']
-    open_ = today_record['open']
-    high = today_record['high']
-    low = today_record['low']
-
-    prev_close = yesterday_record['close']
-    prev_open = yesterday_record['open']
-
-    # 1. صخره (Doji - ساده): باز شدن و بسته شدن نزدیک به هم
-    if (high - low) > 1e-6 and abs(open_ - close) / (high - low) < 0.1:
-        patterns.append("Doji (صخره)")
-
-    # 2. چکش (Hammer - ساده): سایه پایینی بلند، بدنه کوچک در بالا
-    body = abs(open_ - close)
+    
+    # استخراج داده‌های امروز و دیروز
+    close = float(today_record['close'])
+    open_ = float(today_record['open'])
+    high = float(today_record['high'])
+    low = float(today_record['low'])
+    volume = float(today_record['volume'])
+    
+    prev_close = float(yesterday_record['close'])
+    prev_open = float(yesterday_record['open'])
+    prev_high = float(yesterday_record['high'])
+    prev_low = float(yesterday_record['low'])
+    
+    # محاسبات پایه
+    body = abs(close - open_)
+    total_range = high - low
     lower_shadow = min(open_, close) - low
     upper_shadow = high - max(open_, close)
-
-    if lower_shadow > 2 * body and upper_shadow < 0.5 * body:
-        patterns.append("Hammer (چکش)")
-
-    # 3. پوشای صعودی (Bullish Engulfing - دو روزه)
-    # الف) روز اول: نزولی (بسته شدن < باز شدن)
-    # ب) روز دوم: صعودی (بسته شدن > باز شدن)
-    # ج) بدنه روز دوم، بدنه روز اول را کاملاً پوشانده
-    if prev_close < prev_open and close > open_:
-        if close > prev_open and open_ < prev_close:
+    
+    # میانگین حجم 20 روزه برای فیلتر نویز
+    volume_ma_20 = historical_df['volume'].tail(20).mean() if len(historical_df) >= 20 else volume
+    
+    # 🔧 فیلتر اولیه: حذف سهم‌های با حجم بسیار پایین (نویز)
+    if volume < volume_ma_20 * 0.3:
+        return patterns  # حجم بسیار کم - احتمال نویز بالا
+    
+    # 1. **دوجی (Doji) - تعریف دقیق‌تر**
+    if total_range > 0:
+        body_to_range_ratio = body / total_range
+        
+        # دوجی واقعی: بدنه بسیار کوچک (کمتر از 5% از کل range)
+        if body_to_range_ratio < 0.05:
+            # فیلتر حجم: دوجی با حجم بالا معتبرتر است
+            if volume >= volume_ma_20 * 0.7:
+                # تشخیص نوع دوجی
+                if upper_shadow > lower_shadow * 2:
+                    patterns.append("Gravestone_Doji (دوجی سنگ قبر)")
+                elif lower_shadow > upper_shadow * 2:
+                    patterns.append("Dragonfly_Doji (دوجی سنجاقک)")
+                else:
+                    patterns.append("Doji (دوجی)")
+    
+    # 2. **چکش (Hammer) و مرد آویزان (Hanging Man)**
+    if total_range > 0 and body > 0:
+        lower_shadow_ratio = lower_shadow / total_range
+        upper_shadow_ratio = upper_shadow / total_range
+        body_ratio = body / total_range
+        
+        # چکش: سایه پایینی حداقل 2 برابر بدنه، سایه بالایی کوچک
+        is_hammer_shape = (lower_shadow_ratio >= 0.6 and 
+                          upper_shadow_ratio <= 0.1 and 
+                          body_ratio <= 0.3)
+        
+        if is_hammer_shape:
+            # تشخیص روند برای تمایز چکش و مرد آویزان
+            if len(historical_df) >= 5:
+                short_trend = calculate_trend(historical_df.tail(5))
+                if short_trend < -0.1:  # روند نزولی
+                    patterns.append("Hammer (چکش)")
+                elif short_trend > 0.1:  # روند صعودی  
+                    patterns.append("Hanging_Man (مرد آویزان)")
+    
+    # 3. **پوشای صعودی (Bullish Engulfing) - منطق دقیق‌تر**
+    if (prev_close < prev_open and  # روز قبل نزولی
+        close > open_ and           # امروز صعودی
+        open_ < prev_close and      # باز شدن امروز پایین‌تر از بسته شدن دیروز
+        close > prev_open):         # بسته شدن امروز بالاتر از باز شدن دیروز
+        
+        # فیلتر اندازه: بدنه امروز باید حداقل 1.5 برابر بدنه دیروز باشد
+        today_body = close - open_
+        yesterday_body = prev_open - prev_close  # منفی چون نزولی است
+        if today_body > abs(yesterday_body) * 1.5:
             patterns.append("Bullish_Engulfing (پوشای صعودی)")
-
-    # 4. ستاره صبحگاهی (Morning Star - سه روزه)
+    
+    # 4. **پوشای نزولی (Bearish Engulfing)**
+    if (prev_close > prev_open and  # روز قبل صعودی
+        close < open_ and           # امروز نزولی
+        open_ > prev_close and      # باز شدن امروز بالاتر از بسته شدن دیروز  
+        close < prev_open):         # بسته شدن امروز پایین‌تر از باز شدن دیروز
+        
+        today_body = open_ - close
+        yesterday_body = prev_close - prev_open
+        if today_body > yesterday_body * 1.5:
+            patterns.append("Bearish_Engulfing (پوشای نزولی)")
+    
+    # 5. **ستاره صبحگاهی (Morning Star) - منطق دقیق‌تر**
     if len(historical_df) >= 3:
-        day3 = historical_df.iloc[-1] # امروز
-        day2 = historical_df.iloc[-2] # دیروز
-        day1 = historical_df.iloc[-3] # دو روز پیش
-
-        # الف) روز اول: شمع بزرگ نزولی
-        cond1 = day1['close'] < day1['open'] and abs(day1['close'] - day1['open']) > (day1['high'] - day1['low']) * 0.5
-        # ب) روز دوم: شمع کوچک (دوجی یا اسپینینگ تاپ) و دارای گپ نزولی
-        cond2 = abs(day2['close'] - day2['open']) < (day2['high'] - day2['low']) * 0.3 and day2['high'] < day1['low']
-        # ج) روز سوم: شمع بزرگ صعودی که حداقل نصف بدنه روز اول را می‌پوشاند
-        cond3 = day3['close'] > day3['open'] and day3['close'] > (day1['open'] + day1['close']) / 2
-
-        if cond1 and cond2 and cond3:
+        day3 = historical_df.iloc[-1]  # امروز
+        day2 = historical_df.iloc[-2]  # دیروز  
+        day1 = historical_df.iloc[-3]  # پریروز
+        
+        day1_close = float(day1['close'])
+        day1_open = float(day1['open'])
+        day2_close = float(day2['close']) 
+        day2_open = float(day2['open'])
+        day3_close = float(day3['close'])
+        day3_open = float(day3['open'])
+        
+        # 🔧 اصلاح: تعریف day3_range
+        day1_range = float(day1['high']) - float(day1['low'])
+        day2_range = float(day2['high']) - float(day2['low'])
+        day3_range = float(day3['high']) - float(day3['low'])  # این خط اضافه شد
+        
+        # روز اول: شمع بزرگ نزولی
+        day1_body = abs(day1_close - day1_open)
+        is_day1_bearish = (day1_close < day1_open and 
+                          day1_body > day1_range * 0.6)
+        
+        # روز دوم: شمع کوچک با گپ نزولی
+        day2_body = abs(day2_close - day2_open)
+        is_day2_small = (day2_body < day2_range * 0.3)
+        has_gap_down = (day2_open < day1_close)  # گپ نزولی
+        
+        # روز سوم: شمع بزرگ صعودی که وارد بدنه روز اول شود
+        day3_body = day3_close - day3_open  # مثبت چون صعودی
+        is_day3_bullish = (day3_close > day3_open and 
+                          day3_body > day3_range * 0.6)
+        penetrates_day1 = (day3_close > (day1_open + day1_close) / 2)
+        
+        if is_day1_bearish and is_day2_small and has_gap_down and is_day3_bullish and penetrates_day1:
             patterns.append("Morning_Star (ستاره صبحگاهی)")
+    
+    # 6. **ستاره عصرگاهی (Evening Star)**
+    if len(historical_df) >= 3:
+        day3 = historical_df.iloc[-1]  # امروز
+        day2 = historical_df.iloc[-2]  # دیروز
+        day1 = historical_df.iloc[-3]  # پریروز
+        
+        day1_close = float(day1['close'])
+        day1_open = float(day1['open'])
+        day2_close = float(day2['close'])
+        day2_open = float(day2['open']) 
+        day3_close = float(day3['close'])
+        day3_open = float(day3['open'])
+        
+        # 🔧 اصلاح: تعریف day3_range
+        day1_range = float(day1['high']) - float(day1['low'])
+        day2_range = float(day2['high']) - float(day2['low'])
+        day3_range = float(day3['high']) - float(day3['low'])  # این خط اضافه شد
+        
+        # روز اول: شمع بزرگ صعودی
+        day1_body = day1_close - day1_open
+        is_day1_bullish = (day1_close > day1_open and 
+                          day1_body > day1_range * 0.6)
+        
+        # روز دوم: شمع کوچک با گپ صعودی  
+        day2_body = abs(day2_close - day2_open)
+        is_day2_small = (day2_body < day2_range * 0.3)
+        has_gap_up = (day2_open > day1_close)  # گپ صعودی
+        
+        # روز سوم: شمع بزرگ نزولی که وارد بدنه روز اول شود
+        day3_body = day3_open - day3_close  # مثبت چون نزولی
+        is_day3_bearish = (day3_close < day3_open and 
+                          day3_body > day3_range * 0.6)
+        penetrates_day1 = (day3_close < (day1_open + day1_close) / 2)
+        
+        if is_day1_bullish and is_day2_small and has_gap_up and is_day3_bearish and penetrates_day1:
+            patterns.append("Evening_Star (ستاره عصرگاهی)")
+    
+    # 7. **شوتینگ استار (Shooting Star)**
+    if total_range > 0 and close < open_:  # شمع نزولی
+        upper_shadow_ratio = upper_shadow / total_range
+        body_ratio = body / total_range
+        
+        if (upper_shadow_ratio >= 0.6 and  # سایه بالایی بلند
+            body_ratio <= 0.3 and          # بدنه کوچک
+            lower_shadow < body):          # سایه پایینی کوتاه
+            
+            patterns.append("Shooting_Star (شوتینگ استار)")
 
-    # افزودن الگوهای بیشتر بر اساس نیاز...
-
+    # 8. **هارامی (Harami) - الگوی بازگشتی کوچک**
+    if (abs(prev_close - prev_open) > 0 and  # کندل قبلی بدنه بزرگی دارد
+        body < abs(prev_close - prev_open) * 0.5 and  # کندل امروز داخل بدنه دیروز است
+        min(open_, close) > min(prev_open, prev_close) and
+        max(open_, close) < max(prev_open, prev_close)):
+        
+        if prev_close < prev_open and close > open_:  # هارامی صعودی
+            patterns.append("Bullish_Harami (هارامی صعودی)")
+        elif prev_close > prev_open and close < open_:  # هارامی نزولی
+            patterns.append("Bearish_Harami (هارامی نزولی)")
+    
+    # 9. **پیرسینگ لاین (Piercing Line) و دارک کلود کاور (Dark Cloud Cover)**
+    if prev_close < prev_open:  # روز قبل نزولی
+        today_body = close - open_
+        yesterday_body = prev_open - prev_close
+        penetration = (close - prev_close) / (prev_open - prev_close)
+        if penetration > 0.5:  # کندل امروز حداقل 50% کندل دیروز را پوشش دهد
+            patterns.append("Piercing_Line (پیرسینگ لاین)")
+    
+    elif prev_close > prev_open:  # روز قبل صعودی
+        today_body = open_ - close
+        yesterday_body = prev_close - prev_open
+        penetration = (prev_close - close) / (prev_close - prev_open)
+        if penetration > 0.5:  # کندل امروز حداقل 50% کندل دیروز را پوشش دهد
+            patterns.append("Dark_Cloud_Cover (دارک کلود کاور)")
+    
     return patterns
+
+
+def calculate_trend(df: pd.DataFrame, period: int = 5) -> float:
+    """
+    محاسبه روند قیمتی برای تشخیص جهت بازار.
+    """
+    if len(df) < period:
+        return 0.0
+    
+    recent_data = df.tail(period)
+    start_price = float(recent_data.iloc[0]['close'])
+    end_price = float(recent_data.iloc[-1]['close'])
+    
+    if start_price > 0:
+        return (end_price - start_price) / start_price
+    return 0.0
+
+
+def is_valid_pattern(patterns: List[str], volume: float, avg_volume: float) -> bool:
+    """
+    اعتبارسنجی الگوهای تشخیص داده شده بر اساس فیلترهای حجم و نویز.
+    """
+    if not patterns:
+        return False
+    
+    # فیلتر حجم: الگو با حجم پایین اعتبار کمتری دارد
+    volume_ratio = volume / avg_volume if avg_volume > 0 else 1.0
+    
+    # برای الگوهای مهم، حجم باید بالاتر از میانگین باشد
+    important_patterns = ['Bullish_Engulfing', 'Bearish_Engulfing', 'Morning_Star', 'Evening_Star']
+    
+    for pattern in patterns:
+        if pattern.split(' ')[0] in important_patterns and volume_ratio < 0.8:
+            return False
+    
+    return True
 
 # -----------------------------------------------------------
 # تابع Placeholder برای تحلیل فاندامنتال
@@ -487,33 +663,72 @@ def check_candlestick_patterns(today_record: dict, yesterday_record: dict, histo
 
 def calculate_fundamental_metrics(df: pd.DataFrame, fundamental_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
-    محاسبه شاخص‌های فاندامنتال بر اساس داده‌های موجود در DataFrame تاریخی و داده‌های فاندامنتال مجزا.
-
-    ⚠️ توجه: برای پیاده‌سازی کامل، باید ستون‌های فاندامنتال (مانند EPS, P/E, DPS) به HistoricalData اضافه شوند
-    یا از یک جدول/فایل جداگانه فراخوانی شوند.
+    محاسبه شاخص‌های فاندامنتال پیشرفته با استفاده از داده‌های موجود.
     """
-    # در این مرحله، ما تنها از داده‌های موجود در HistoricalData استفاده می‌کنیم (مانند نسبت‌های قدرت خریدار/فروشنده)
-
-    # 1. محاسبه قدرت خریدار حقیقی / فروشنده حقیقی (بر اساس حجم و تعداد)
-    buy_power_real = df['buy_i_volume'] / df['buy_count_i'].replace(0, np.nan)
-    sell_power_real = df['sell_i_volume'] / df['sell_count_i'].replace(0, np.nan)
-
-    # نسبت قدرت خرید به فروش
-    df['Real_Buyer_Power'] = buy_power_real.fillna(0)
-    df['Real_Seller_Power'] = sell_power_real.fillna(0)
-
-    with np.errstate(divide='ignore', invalid='ignore'):
-        df['Real_Power_Ratio'] = (buy_power_real / sell_power_real).fillna(1)
-
-    # 2. محاسبه حجم/میانگین حجم
-    df['Volume_Ratio_20d'] = df['volume'] / df['Volume_MA_20'].replace(0, np.nan)
-
-    # 3. نقدشوندگی (Liquidity) - اندازه‌گیری سادگی معامله
-    # Liquidity = (Volume * Price) / Number_of_Shares_Float
-    # از آنجایی که تعداد سهام شناور نداریم، از حجم معاملاتی استفاده می‌کنیم.
-    df['Daily_Liquidity'] = df['volume'] * df['final']
-
-    return df
+    df_copy = df.copy()
+    
+    try:
+        # 1. نسبت‌های قدرت بازارگردانی
+        if all(col in df_copy.columns for col in ['buy_i_volume', 'sell_i_volume', 'buy_count_i', 'sell_count_i']):
+            # میانگین حجم هر معامله حقیقی
+            df_copy['Avg_Buy_Volume_Per_Trade'] = df_copy['buy_i_volume'] / df_copy['buy_count_i'].replace(0, np.nan)
+            df_copy['Avg_Sell_Volume_Per_Trade'] = df_copy['sell_i_volume'] / df_copy['sell_count_i'].replace(0, np.nan)
+            
+            # نسبت قدرت خریدار به فروشنده
+            df_copy['Buy_Sell_Power_Ratio'] = (df_copy['buy_i_volume'] / df_copy['sell_i_volume'].replace(0, np.nan)).fillna(1)
+            
+            # شاخص تمرکز خرید/فروش
+            df_copy['Trade_Concentration'] = (df_copy['buy_i_volume'] + df_copy['sell_i_volume']) / df_copy['volume'].replace(0, np.nan)
+        
+        # 2. شاخص‌های نقدشوندگی پیشرفته
+        if 'volume' in df_copy.columns and 'final' in df_copy.columns:
+            # ارزش معاملات روزانه
+            df_copy['Daily_Trade_Value'] = df_copy['volume'] * df_copy['final']
+            
+            # نوسان قیمتی روزانه
+            df_copy['Daily_Price_Range'] = (df_copy['high'] - df_copy['low']) / df_copy['final'].replace(0, np.nan)
+            
+            # شاخص نقدشوندگی (بر اساس ارزش و حجم)
+            df_copy['Liquidity_Score'] = (df_copy['Daily_Trade_Value'] * df_copy['volume']) / (df_copy['high'] - df_copy['low']).replace(0, np.nan)
+        
+        # 3. شاخص‌های مومنتوم فاندامنتال
+        if 'close' in df_copy.columns:
+            # بازده روزانه
+            df_copy['Daily_Return'] = df_copy['close'].pct_change()
+            
+            # نوسان بازده (20 روزه)
+            df_copy['Return_Volatility_20d'] = df_copy['Daily_Return'].rolling(window=20).std()
+            
+            # شاخص قدرت نسبی (RSI) مبتنی بر بازده
+            df_copy['Return_RSI'] = calculate_rsi(df_copy['close'])
+        
+        # 4. ادغام داده‌های فاندامنتال خارجی اگر موجود باشد
+        if fundamental_df is not None:
+            # این بخش می‌تواند داده‌های EPS, P/E, P/B را ادغام کند
+            # فعلاً به عنوان placeholder باقی می‌ماند
+            pass
+            
+        # 5. شاخص سلامت معاملاتی
+        if all(col in df_copy.columns for col in ['num_trades', 'volume']):
+            # میانگین حجم هر معامله
+            df_copy['Avg_Volume_Per_Trade'] = df_copy['volume'] / df_copy['num_trades'].replace(0, np.nan)
+            
+            # شاخص فعالیت معاملاتی
+            df_copy['Trade_Activity_Index'] = df_copy['num_trades'] / df_copy['num_trades'].rolling(window=20).mean()
+        
+        # 6. Z-Score برای شناسایی outliers
+        if 'volume' in df_copy.columns:
+            df_copy['Volume_Z_Score'] = calculate_z_score(df_copy['volume'])
+        
+        # 7. شاخص فشار خرید/فروش
+        if all(col in df_copy.columns for col in ['plc', 'volume']):
+            # فشار قیمت-حجم
+            df_copy['Price_Volume_Pressure'] = df_copy['plc'] * df_copy['volume'] / df_copy['volume'].rolling(window=20).mean()
+        
+    except Exception as e:
+        logger.error(f"خطا در محاسبه شاخص‌های فاندامنتال: {e}")
+    
+    return df_copy
 
 # لیست توابعی که برای import شدن در سرویس اصلی مجاز هستند
 __all__ = [
