@@ -152,7 +152,7 @@ def update_daily_eod_from_brsapi(db_session: Session) -> Tuple[int, str]:
     
     df_eod['symbol_id'] = df_eod['tse_index'].astype(str).map(symbol_map)
     df_eod.dropna(subset=['symbol_id'], inplace=True)
-    df_eod['symbol_id'] = df_eod['symbol_id'].astype(str)
+    df_eod['symbol_id'] = df_eod['symbol_id'].astype(int)
 
     logger.info(f"✅ تعداد نمادهای مپ شده: {len(df_eod)}")
     logger.info(f"📋 نمونه symbol_id ها: {df_eod['symbol_id'].head(3).tolist()}")
