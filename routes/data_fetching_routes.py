@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 # routes/data_fetching_routes.py
 # مسئول: تعریف اندپوینت‌های مربوط به واکشی داده، تحلیل تکنیکال، و پیش‌بینی‌های ML
-# این فایل برای کار با ساختار جدید سرویس‌ها بازنویسی شده است.
+# 💥 نسخه نهایی ۲: افزودن commit صریح در routes برای اطمینان از ذخیره‌سازی
 
 import logging
 import traceback
 from datetime import date
 import jdatetime
 from flask_restx import Namespace, Resource, fields, reqparse
-from extensions import db
-from sqlalchemy.orm import sessionmaker, Session
+from extensions import db # 👈 استفاده مستقیم از db
+from sqlalchemy.orm import sessionmaker, Session # Session همچنان برای Type Hinting لازم است
 
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import request, current_app
@@ -26,10 +26,6 @@ data_ns = Namespace('data', description='Data Fetching, Analysing and ML Predict
 # =========================
 # توابع کمکی
 # =========================
-def get_session_local() -> Session:
-    """یک Session محلی برای دیتابیس ایجاد می‌کند تا از کانتکست Flask مستقل باشد."""
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db.engine)
-    return SessionLocal()
 
 def parse_date(value: str) -> date | None:
     """تاریخ را از فرمت رشته (YYYY-MM-DD) شمسی یا میلادی به شیء date میلادی تبدیل می‌کند."""
@@ -47,7 +43,7 @@ def parse_date(value: str) -> date | None:
             return None
 
 # =========================
-# --- API Models for Swagger/RESTX Documentation ---
+# --- API Models --- (بدون تغییر)
 # =========================
 # Historical Data Model
 historical_data_model = data_ns.model('HistoricalData', {
@@ -163,21 +159,17 @@ ml_prediction_model = data_ns.model('MLPredictionModel', {
     'updated_at': fields.String
 })
 
-
-
 # =================================================================================
-# --- Parsers for API Endpoints ---
+# --- Parsers --- (بدون تغییر)
 # =================================================================================
 # پارسر برای اندپوینت بازسازی کامل داده‌ها
 rebuild_parser = reqparse.RequestParser()
 rebuild_parser.add_argument('batch_size', type=int, default=50, help='تعداد نمادها در هر بچ پردازشی')
 rebuild_parser.add_argument('commit_batch_size', type=int, default=100, help='تعداد نمادهای پردازش‌شده قبل از هر commit')
 
-
-# پارسر برای اندپوینت‌های تحلیل که می‌توانند لیست نمادها را دریافت کنند
+# پارسر برای اندپوینت‌های تحلیل
 analysis_parser = reqparse.RequestParser()
 analysis_parser.add_argument('limit', type=int, required=False, help='محدودیت تعداد نمادها برای پردازش')
-# 'days_limit' حذف شد زیرا سرویس‌های تحلیلی جدید داده واکشی نمی‌کنند و روی کل تاریخچه موجود کار می‌کنند.
 analysis_parser.add_argument(
     'specific_symbols',
     type=list,
@@ -197,16 +189,14 @@ ml_generate_parser = reqparse.RequestParser()
 ml_generate_parser.add_argument('prediction_date', type=str, required=False, help='تاریخ میلادی برای تولید پیش‌بینی (YYYY-MM-DD)')
 ml_generate_parser.add_argument('prediction_period_days', type=int, default=7, help='دوره پیش‌بینی به روز')
 
-
 # =================================================================================
-# --- Import سرویس‌ها (بر اساس ساختار جدید) ---
+# --- Import سرویس‌ها --- (بدون تغییر)
 # =================================================================================
 from services.data_fetcher import run_full_rebuild
 from services.fetch_latest_brsapi_eod import update_daily_eod_from_brsapi
 from services.historical_data_service import get_historical_data_for_symbol
-
 from services.data_processing_and_analysis import (
-    run_technical_analysis, 
+    run_technical_analysis,
     run_candlestick_detection
 )
 from services.ml_prediction_service import (
@@ -230,7 +220,6 @@ class FullRebuildResource(Resource):
     def post(self):
         """
         اجرای چرخه کامل بازسازی داده‌ها از TSETMC.
-        این عملیات سنگین، تمام داده‌های پایه را پاک کرده و از نو واکشی و ذخیره می‌کند.
         """
         logger = logging.getLogger(__name__)
         logger.info("🌀 [API] Starting full data rebuild process...")
@@ -245,36 +234,32 @@ class FullRebuildResource(Resource):
             logger.error(f"❌ Fatal error in full-rebuild endpoint: {e}\n{traceback.format_exc()}")
             return {"status": "error", "message": f"An unexpected error occurred: {e}"}, 500
 
-
-
-
-
-
-
 @data_ns.route('/fetch/daily-eod-update')
 class DailyEODUpdateResource(Resource):
     @data_ns.doc('run_daily_eod_update')
     def post(self):
         """
-        واکشی و ذخیره آخرین داده‌های روزانه (EOD) و اطلاعات صف سفارش از BRSAPI.
-        این عملیات باید روزانه پس از پایان بازار اجرا شود.
+        واکشی و ذخیره آخرین داده‌های روزانه (EOD) از BRSAPI.
         """
         logger = logging.getLogger(__name__)
         logger.info("⚡️ [API] Starting daily EOD update from BRSAPI...")
-        session = get_session_local()
         try:
-            count, message = update_daily_eod_from_brsapi(session)
+            # پاس دادن db.session
+            count, message = update_daily_eod_from_brsapi(db.session)
+            #
+            # 💥 [جدید] Commit صریح پس از اجرای موفق
+            #
+            db.session.commit()
+            logger.info("✅ Daily EOD update committed successfully.")
             return {"status": "success", "updated_symbols": count, "message": message}, 200
         except Exception as e:
-            logger.error(f"❌ Error in daily-eod-update endpoint: {e}\n{traceback.format_exc()}")
+            #
+            # 💥 [جدید] Rollback صریح در صورت خطا
+            #
+            logger.error(f"❌ Error in daily-eod-update endpoint: {e}\n{traceback.format_exc()}. Rolling back...")
+            db.session.rollback()
             return {"status": "error", "message": str(e)}, 500
-        finally:
-            session.close()
-
-
-
-
-
+        # finally بلوک حذف شد چون مدیریت Session توسط Flask انجام می‌شود
 
 # -----------------------------------
 # ۲. اندپوینت‌های مربوط به تحلیل داده
@@ -285,70 +270,78 @@ class RunTechnicalAnalysisResource(Resource):
     @data_ns.expect(analysis_parser)
     def post(self):
         """
-        اجرای تحلیل تکنیکال (RSI, MACD, SMA و...) برای نمادها.
-        می‌تواند برای تمام نمادها یا لیست مشخصی اجرا شود.
+        اجرای تحلیل تکنیکال برای نمادها.
         """
         logger = logging.getLogger(__name__)
         logger.info("📊 [API] Running comprehensive technical analysis...")
-        session = get_session_local()
         try:
             args = analysis_parser.parse_args()
             
-            #
-            # ===== ❗️ اصلاحیه ۳: به‌روزرسانی فراخوانی تابع =====
-            #
+            # پاس دادن db.session
             processed_count, message = run_technical_analysis(
-                db_session=session,
+                db_session=db.session,
                 limit=args.get('limit'),
-                symbols_list=args.get('specific_symbols') # تغییر نام آرگومان
-                # 'days_limit' حذف شد چون در تابع جدید وجود ندارد
+                symbols_list=args.get('specific_symbols')
             )
+            #
+            # 💥 [جدید] Commit صریح پس از اجرای موفق
+            #
+            db.session.commit()
+            logger.info(f"✅ Technical analysis for {processed_count} symbols committed successfully.")
             return {"status": "success", "processed_symbols": processed_count, "message": message}, 200
         except Exception as e:
-            logger.error(f"❌ Error in technical analysis endpoint: {e}\n{traceback.format_exc()}")
+            #
+            # 💥 [جدید] Rollback صریح در صورت خطا
+            #
+            logger.error(f"❌ Error in technical analysis endpoint: {e}\n{traceback.format_exc()}. Rolling back...")
+            db.session.rollback()
             return {"status": "error", "message": str(e)}, 500
-        finally:
-            session.close()
-
-
+        # finally بلوک حذف شد
 
 @data_ns.route('/analysis/candlesticks')
 class RunCandlestickDetectionResource(Resource):
     @data_ns.doc('run_candlestick_detection')
-    @data_ns.expect(analysis_parser) # استفاده از همان پارسر
+    @data_ns.expect(analysis_parser)
     def post(self):
         """
-        اجرای تشخیص الگوهای شمعی (Candlestick Patterns) برای آخرین روز.
-        نتایج در جدول CandlestickPatternDetection ذخیره/جایگزین می‌شوند.
+        اجرای تشخیص الگوهای شمعی برای آخرین روز.
         """
         logger = logging.getLogger(__name__)
         logger.info("🕯️ [API] Running Candlestick Pattern Detection...")
-        session = get_session_local()
         try:
             args = analysis_parser.parse_args()
             
-            # فراخوانی تابع جدید از سرویس
+            # پاس دادن db.session
             processed_count = run_candlestick_detection(
-                db_session=session,
+                db_session=db.session,
                 limit=args.get('limit'),
                 symbols_list=args.get('specific_symbols')
             )
-            
+            #
+            # 💥 [جدید] Commit صریح پس از اجرای موفق (شامل Delete و Insert الگوها)
+            #
+            db.session.commit()
+            logger.info(f"✅ Candlestick detection results (for {processed_count} symbols) committed successfully.")
             return {
-                "status": "success", 
-                "symbols_with_patterns_found": processed_count, 
+                "status": "success",
+                "symbols_with_patterns_found": processed_count,
                 "message": f"Candlestick detection completed. Found patterns for {processed_count} symbols."
             }, 200
         except Exception as e:
-            logger.error(f"❌ Error in candlestick detection endpoint: {e}\n{traceback.format_exc()}")
+            #
+            # 💥 [جدید] Rollback صریح در صورت خطا
+            #
+            logger.error(f"❌ Error in candlestick detection endpoint: {e}\n{traceback.format_exc()}. Rolling back...")
+            db.session.rollback()
             return {"status": "error", "message": str(e)}, 500
-        finally:
-            session.close()
-
+        # finally بلوک حذف شد
 
 # ------------------------------------------
 # ۳. اندپوینت‌های مربوط به پیش‌بینی ML
 # ------------------------------------------
+# فرض می‌کنیم توابع سرویس ML به درستی Session را مدیریت می‌کنند یا commit صریح دارند
+# در غیر این صورت، مشابه بالا باید commit/rollback در route اضافه شود.
+
 @data_ns.route('/ml-predictions/generate')
 class GenerateMLPredictionsResource(Resource):
     @data_ns.doc('generate_ml_predictions')
@@ -367,12 +360,17 @@ class GenerateMLPredictionsResource(Resource):
                 prediction_date_greg=prediction_date,
                 prediction_period_days=args['prediction_period_days']
             )
+            # 🚦 نکته: اگر تابع generate_and_save... خودش commit نکند، باید اینجا commit کنید
+            # db.session.commit()
             if success:
                 return {"status": "success", "message": message}, 200
             else:
+                # اگر تابع خودش rollback نکرده باشد، اینجا rollback کنید
+                # db.session.rollback()
                 return {"status": "error", "message": message}, 400
         except Exception as e:
             logger.error(f"❌ Error in generate-ml-predictions endpoint: {e}\n{traceback.format_exc()}")
+            db.session.rollback() # Rollback در صورت خطای پیش‌بینی نشده
             return {"status": "error", "message": str(e)}, 500
 
 @data_ns.route('/ml-predictions/update-outcomes')
@@ -380,19 +378,22 @@ class UpdateMLOutcomesResource(Resource):
     @data_ns.doc('update_ml_outcomes')
     def post(self):
         """
-        به‌روزرسانی نتایج واقعی پیش‌بینی‌های گذشته برای ارزیابی دقت مدل.
-        این اندپوینت باید به صورت دوره‌ای (روزانه) فراخوانی شود.
+        به‌روزرسانی نتایج واقعی پیش‌بینی‌های گذشته.
         """
         logger = logging.getLogger(__name__)
         logger.info("🎯 [API] Updating ML prediction outcomes...")
         try:
             success, message = update_ml_prediction_outcomes()
+            # 🚦 نکته: اگر تابع update_ml_prediction_outcomes خودش commit نکند، باید اینجا commit کنید
+            # db.session.commit()
             if success:
                 return {"status": "success", "message": message}, 200
             else:
+                # db.session.rollback()
                 return {"status": "error", "message": message}, 400
         except Exception as e:
             logger.error(f"❌ Error in update-ml-outcomes endpoint: {e}\n{traceback.format_exc()}")
+            db.session.rollback()
             return {"status": "error", "message": str(e)}, 500
 
 @data_ns.route('/ml-predictions/all')
@@ -400,14 +401,15 @@ class GetAllMLPredictionsResource(Resource):
     @data_ns.doc('get_all_ml_predictions')
     @data_ns.marshal_list_with(ml_prediction_model)
     def get(self):
-        """دریافت لیست تمام پیش‌بینی‌های ML ذخیره شده در دیتابیس."""
+        """دریافت لیست تمام پیش‌بینی‌های ML."""
         logger = logging.getLogger(__name__)
         logger.info("📚 [API] Fetching all ML predictions...")
         try:
-            predictions = get_all_ml_predictions()
+            predictions = get_all_ml_predictions() # این تابع فقط query می‌زند، commit/rollback ندارد
             return predictions, 200
         except Exception as e:
             logger.error(f"❌ Error getting all ML predictions: {e}\n{traceback.format_exc()}")
+            # نیازی به rollback نیست چون فقط خواندن بوده
             return {"status": "error", "message": str(e)}, 500
 
 @data_ns.route('/ml-predictions/<string:symbol_id>')
@@ -415,11 +417,11 @@ class GetSymbolMLPredictionResource(Resource):
     @data_ns.doc('get_symbol_ml_prediction')
     @data_ns.marshal_with(ml_prediction_model)
     def get(self, symbol_id: str):
-        """دریافت آخرین پیش‌بینی ML برای یک نماد مشخص."""
+        """دریافت آخرین پیش‌بینی ML برای یک نماد."""
         logger = logging.getLogger(__name__)
         logger.info(f"🔍 [API] Fetching latest ML prediction for symbol: {symbol_id}")
         try:
-            prediction = get_ml_predictions_for_symbol(symbol_id)
+            prediction = get_ml_predictions_for_symbol(symbol_id) # فقط query
             if prediction:
                 return prediction, 200
             return {"message": f"No prediction found for symbol {symbol_id}"}, 404
@@ -427,15 +429,11 @@ class GetSymbolMLPredictionResource(Resource):
             logger.error(f"❌ Error getting ML prediction for {symbol_id}: {e}\n{traceback.format_exc()}")
             return {"status": "error", "message": str(e)}, 500
 
-
-
-
-
 # ------------------------------------
 # ۴. اندپوینت‌های مربوط به دریافت داده
 # ------------------------------------
-
-@data_ns.route('/stock-history/<string:symbol_input>') # تغییر نام متغیر به symbol_input
+# این اندپوینت فقط داده می‌خواند، نیازی به commit/rollback صریح ندارد
+@data_ns.route('/stock-history/<string:symbol_input>')
 @data_ns.param('symbol_input', 'شناسه یا نام نماد (مثال: خودرو)')
 class StockHistoryResource(Resource):
     @data_ns.doc(security='Bearer Auth', parser=historical_data_parser)
@@ -443,9 +441,9 @@ class StockHistoryResource(Resource):
     @data_ns.response(200, 'Historical data fetched successfully')
     @data_ns.response(400, 'Invalid date format')
     @data_ns.response(404, 'No data found for symbol')
-    def get(self, symbol_input): # تغییر نام متغیر به symbol_input
+    def get(self, symbol_input):
         """
-        واکشی سابقه معاملات (Historical Data) یک نماد مشخص با قابلیت فیلتر زمانی.
+        واکشی سابقه معاملات یک نماد.
         """
         try:
             args = historical_data_parser.parse_args()
@@ -459,11 +457,10 @@ class StockHistoryResource(Resource):
             if (start_date_str and start_date is None) or (end_date_str and end_date is None):
                 data_ns.abort(400, "Invalid date format. Please use YYYY-MM-DD (Gregorian or Jalali).")
 
-            # 🚀 فراخوانی تابع سرویس
             history_data = get_historical_data_for_symbol(
-                symbol_input, # از symbol_input استفاده می‌شود.
-                start_date=start_date, 
-                end_date=end_date, 
+                symbol_input,
+                start_date=start_date,
+                end_date=end_date,
                 days=days
             )
             
@@ -472,23 +469,19 @@ class StockHistoryResource(Resource):
                 data_ns.abort(500, "Internal server error during data retrieval. Service returned None.")
 
             if not history_data:
-                # این خط باعث ایجاد 404 می‌شود.
                 data_ns.abort(404, f"No historical data found for symbol: {symbol_input} in the specified range.")
 
             return {"history": history_data}, 200
             
         except HTTPException as e:
-            # ✅ FIX: اگر خطا یک خطای HTTP (مثل 404 یا 400) باشد، آن را بدون تغییر بالا می‌اندازیم.
             raise e
             
         except Exception as e:
-            # برای هر خطای غیرمنتظره دیگر (مثل خطای دیتابیس یا منطقی)
             current_app.logger.error(f"An unexpected critical error occurred for {symbol_input}: {e}", exc_info=True)
             data_ns.abort(500, f"An unexpected critical error occurred: {str(e)}")
 
-
 # ---------------------------
-# Health Check
+# Health Check (بدون تغییر)
 # ---------------------------
 from sqlalchemy import text
 
