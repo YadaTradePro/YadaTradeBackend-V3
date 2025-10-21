@@ -6,8 +6,6 @@
 import pandas as pd
 import numpy as np
 import logging
-
-
 import jdatetime
 import datetime
 from sqlalchemy import func
@@ -15,15 +13,8 @@ from functools import lru_cache
 from typing import Union, List, Dict, Optional, Tuple, Any
 import time 
 
-
-
-
 # تنظیمات لاگینگ
 logger = logging.getLogger(__name__)
-
-
-
-
 
 # --- توابع عمومی و تبدیل تاریخ ---
 
@@ -86,7 +77,6 @@ def normalize_value(val: Any) -> Optional[Union[float, int]]:
             logger.warning(f"خطا در تبدیل رشته '{val}' به عدد.")
             return None
     return val
-
 
 # --- تنظیمات API و تاخیر ---
 DEFAULT_PER_SYMBOL_DELAY: float = 0.3 # تاخیر پیش‌فرض ۰.۳ ثانیه بین هر درخواست API
@@ -156,7 +146,6 @@ def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int
     atr = tr.ewm(span=period, adjust=False, min_periods=1).mean()
     return atr
 
-
 def calculate_smart_money_flow(df: pd.DataFrame) -> pd.DataFrame:
     """
     محاسبه معیارهای جریان پول هوشمند از داده‌های تاریخی.
@@ -193,8 +182,6 @@ def calculate_smart_money_flow(df: pd.DataFrame) -> pd.DataFrame:
     else:
         return df_copy[['individual_buy_power', 'individual_net_flow', 'individual_buy_per_trade', 'individual_sell_per_trade']].copy()
 
-
-
 def calculate_z_score(series: pd.Series) -> Optional[float]:
     """
     محاسبه Z-Score برای یک pandas Series.
@@ -215,12 +202,6 @@ def calculate_z_score(series: pd.Series) -> Optional[float]:
         
     z_score = (series_cleaned.iloc[-1] - mean) / std
     return float(z_score)
-
-
-
-
-
-
 
 # --- توابع جدید ---
 
@@ -269,7 +250,6 @@ def calculate_squeeze_momentum(df: pd.DataFrame, bb_window=20, bb_std=2, kc_wind
     momentum = avg_price - calculate_sma(avg_price, bb_window)
 
     return squeeze_on.astype(int).reindex(df.index), momentum.reindex(df.index)
-
 
 def calculate_halftrend(df: pd.DataFrame, amplitude=2, channel_deviation=2) -> Tuple[pd.Series, pd.Series]:
     """محاسبه اندیکاتور HalfTrend (روند و سیگنال)."""
@@ -331,7 +311,6 @@ def calculate_halftrend(df: pd.DataFrame, amplitude=2, channel_deviation=2) -> T
         nan_series = pd.Series([np.nan] * len(df), index=df.index)
         return nan_series, nan_series
 
-
 def calculate_support_resistance_break(df: pd.DataFrame, window=50) -> Tuple[pd.Series, pd.Series]:
     """محاسبه ساده شکست مقاومت (مقاومت 50 روزه)."""
     close = pd.to_numeric(df['close'].squeeze(), errors='coerce')
@@ -348,15 +327,13 @@ def calculate_support_resistance_break(df: pd.DataFrame, window=50) -> Tuple[pd.
 
     return resistance.astype(float).reindex(df.index), resistance_broken_int.reindex(df.index)
 
-
 # -----------------------------------------------------------
-# تابع اصلی تجمیع اندیکاتورها
+# تابع اصلی تجمیع اندیکاتورها - نسخه بهبود یافته
 # -----------------------------------------------------------
 def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    محاسبه تمام اندیکاتورهای تکنیکال مورد نیاز و اضافه کردن آنها به DataFrame.
+    محاسبه تمام اندیکاتورهای تکنیکال و فاندامنتال مورد نیاز و اضافه کردن آنها به DataFrame.
     """
-
     # اطمینان از اینکه دیتافریم خالی نیست و دارای ستون‌های ضروری است
     required_cols = {'open', 'high', 'low', 'close', 'volume'}
     if df.empty or not required_cols.issubset(df.columns):
@@ -364,55 +341,72 @@ def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     try:
+        # ایجاد کپی از DataFrame برای جلوگیری از SettingWithCopyWarning
+        df_result = df.copy()
+        
         # تبدیل ستون‌ها به نوع عددی و حذف مقادیر نامعتبر
         for col in required_cols:
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        df.dropna(subset=list(required_cols), inplace=True)
+            if not pd.api.types.is_numeric_dtype(df_result[col]):
+                df_result[col] = pd.to_numeric(df_result[col], errors='coerce')
+        
+        # حذف ردیف‌هایی که مقادیر ضروری ندارند
+        df_result.dropna(subset=list(required_cols), inplace=True)
 
-        if df.empty:
+        if df_result.empty:
             logger.warning("پس از تبدیل و پاکسازی، دیتای معتبری برای محاسبه اندیکاتورها باقی نماند.")
             return df
 
         # --- محاسبات اندیکاتورهای استاندارد ---
-        df['RSI'] = calculate_rsi(df['close'])
+        df_result['RSI'] = calculate_rsi(df_result['close'])
 
-        macd, signal, histogram = calculate_macd(df['close'])
-        df['MACD'] = macd
-        df['MACD_Signal'] = signal
-        df['MACD_Histogram'] = histogram
+        macd, signal, histogram = calculate_macd(df_result['close'])
+        df_result['MACD'] = macd
+        df_result['MACD_Signal'] = signal
+        df_result['MACD_Histogram'] = histogram
 
-        df['SMA_20'] = calculate_sma(df['close'], 20)
-        df['SMA_50'] = calculate_sma(df['close'], 50)
+        df_result['SMA_20'] = calculate_sma(df_result['close'], 20)
+        df_result['SMA_50'] = calculate_sma(df_result['close'], 50)
 
-        upper, middle, lower = calculate_bollinger_bands(df['close'])
-        df['Bollinger_Upper'] = upper
-        df['Bollinger_Middle'] = middle
-        df['Bollinger_Lower'] = lower
+        upper, middle, lower = calculate_bollinger_bands(df_result['close'])
+        df_result['Bollinger_Upper'] = upper
+        df_result['Bollinger_Middle'] = middle
+        df_result['Bollinger_Lower'] = lower
 
-        df['Volume_MA_20'] = calculate_volume_ma(df['volume'], 20)
-        df['ATR'] = calculate_atr(df['high'], df['low'], df['close'])
+        df_result['Volume_MA_20'] = calculate_volume_ma(df_result['volume'], 20)
+        df_result['ATR'] = calculate_atr(df_result['high'], df_result['low'], df_result['close'])
 
         # --- محاسبات اندیکاتورهای پیشرفته ---
-        stochastic_k, stochastic_d = calculate_stochastic(df['high'], df['low'], df['close'])
-        df['Stochastic_K'] = stochastic_k
-        df['Stochastic_D'] = stochastic_d
+        stochastic_k, stochastic_d = calculate_stochastic(df_result['high'], df_result['low'], df_result['close'])
+        df_result['Stochastic_K'] = stochastic_k
+        df_result['Stochastic_D'] = stochastic_d
 
         # محاسبه Squeeze Momentum
-        df['squeeze_on'], df['squeeze_momentum'] = calculate_squeeze_momentum(df)
+        squeeze_on, squeeze_momentum = calculate_squeeze_momentum(df_result)
+        df_result['squeeze_on'] = squeeze_on
+        df_result['squeeze_momentum'] = squeeze_momentum
 
         # محاسبه HalfTrend
-        df['halftrend_trend'], df['halftrend_signal'] = calculate_halftrend(df)
+        halftrend_trend, halftrend_signal = calculate_halftrend(df_result)
+        df_result['halftrend_trend'] = halftrend_trend
+        df_result['halftrend_signal'] = halftrend_signal
 
         # محاسبه شکست مقاومت
-        df['resistance_level_50d'], df['resistance_broken'] = calculate_support_resistance_break(df)
+        resistance_level, resistance_broken = calculate_support_resistance_break(df_result)
+        df_result['resistance_level_50d'] = resistance_level
+        df_result['resistance_broken'] = resistance_broken
+
+        # --- محاسبات فاندامنتال و سنتیمنت ---
+        df_result = calculate_fundamental_metrics(df_result)
+        df_result = calculate_market_sentiment(df_result)
+        df_result = detect_anomalies(df_result)
+
+        logger.info("✅ محاسبه اندیکاتورها با موفقیت انجام شد")
+        return df_result
 
     except Exception as e:
-        logger.error(f"❌ خطای بحرانی در پردازش داده‌ها یا محاسبه اندیکاتورهای استاندارد: {e}", exc_info=True)
-        # در صورت بروز خطای بحرانی، DataFrame را با داده‌های موجود برمی‌گردانیم
-
-    return df
-
+        logger.error(f"❌ خطای بحرانی در محاسبه اندیکاتورها: {e}", exc_info=True)
+        # در صورت بروز خطای بحرانی، DataFrame اصلی را برمی‌گردانیم
+        return df
 
 # -----------------------------------------------------------
 # توابع تشخیص الگوهای شمعی (Candlestick Pattern Detection) - نسخه حرفه‌ای
@@ -621,7 +615,6 @@ def check_candlestick_patterns(today_record: dict, yesterday_record: dict, histo
     
     return patterns
 
-
 def calculate_trend(df: pd.DataFrame, period: int = 5) -> float:
     """
     محاسبه روند قیمتی برای تشخیص جهت بازار.
@@ -636,7 +629,6 @@ def calculate_trend(df: pd.DataFrame, period: int = 5) -> float:
     if start_price > 0:
         return (end_price - start_price) / start_price
     return 0.0
-
 
 def is_valid_pattern(patterns: List[str], volume: float, avg_volume: float) -> bool:
     """
@@ -730,9 +722,71 @@ def calculate_fundamental_metrics(df: pd.DataFrame, fundamental_df: Optional[pd.
     
     return df_copy
 
+# -----------------------------------------------------------
+# توابع کمکی برای تحلیل پیشرفته
+# -----------------------------------------------------------
+
+def calculate_market_sentiment(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    محاسبه شاخص‌های سنتیمنت بازار.
+    """
+    df_copy = df.copy()
+    
+    # 1. شاخص قدرت خریداران حقیقی
+    if all(col in df_copy.columns for col in ['buy_i_volume', 'sell_i_volume']):
+        df_copy['Individual_Net_Flow'] = df_copy['buy_i_volume'] - df_copy['sell_i_volume']
+        df_copy['Individual_Net_Flow_MA'] = df_copy['Individual_Net_Flow'].rolling(window=5).mean()
+    
+    # 2. شاخص تمرکز معاملات
+    if all(col in df_copy.columns for col in ['buy_i_volume', 'buy_n_volume', 'volume']):
+        df_copy['Individual_Dominance'] = (df_copy['buy_i_volume'] + df_copy['sell_i_volume']) / df_copy['volume'].replace(0, np.nan)
+    
+    # 3. شاخص مومنتوم جمعی
+    if 'close' in df_copy.columns:
+        df_copy['Price_Momentum'] = df_copy['close'] / df_copy['close'].shift(5) - 1
+        df_copy['Volume_Momentum'] = df_copy['volume'] / df_copy['volume'].shift(5) - 1
+    
+    return df_copy
+
+def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    شناسایی anomalies در داده‌های معاملاتی.
+    """
+    df_copy = df.copy()
+    
+    # 1. آنومالی حجم
+    if 'volume' in df_copy.columns:
+        volume_ma = df_copy['volume'].rolling(window=20).mean()
+        volume_std = df_copy['volume'].rolling(window=20).std()
+        df_copy['Volume_Anomaly'] = (df_copy['volume'] > (volume_ma + 2 * volume_std)).astype(int)
+    
+    # 2. آنومالی قیمت
+    if 'close' in df_copy.columns:
+        returns = df_copy['close'].pct_change()
+        returns_std = returns.rolling(window=20).std()
+        df_copy['Price_Anomaly'] = (abs(returns) > (3 * returns_std)).astype(int)
+    
+    # 3. آنومالی ارزش معاملات
+    if all(col in df_copy.columns for col in ['volume', 'final']):
+        trade_value = df_copy['volume'] * df_copy['final']
+        trade_value_ma = trade_value.rolling(window=20).mean()
+        trade_value_std = trade_value.rolling(window=20).std()
+        df_copy['Trade_Value_Anomaly'] = (trade_value > (trade_value_ma + 2 * trade_value_std)).astype(int)
+    
+    return df_copy
+
 # لیست توابعی که برای import شدن در سرویس اصلی مجاز هستند
 __all__ = [
     'calculate_all_indicators',
     'check_candlestick_patterns',
-    'calculate_fundamental_metrics'
+    'calculate_fundamental_metrics',
+    'calculate_market_sentiment',
+    'detect_anomalies',
+    'calculate_sma',
+    'calculate_rsi',
+    'calculate_macd',
+    'calculate_bollinger_bands',
+    'calculate_atr',
+    'calculate_stochastic',
+    'calculate_z_score'
 ]
