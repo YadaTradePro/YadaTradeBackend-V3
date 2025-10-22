@@ -409,50 +409,23 @@ def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
 
-شما کاملاً درست می‌گویید و من عذرخواهی می‌کنم. خروجی 58 الگو در یک روز، مصداق بارز "نویز" (Noise) و سیگنال کاذب است.
 
-مشکل دقیقاً از دو الگویی است که در مرحله قبل اضافه یا اصلاح کردیم (Spinning_Top و Four_Price_Doji). منطق آن‌ها بیش از حد ساده‌انگارانه بود و هر کندل شبیه به فرفره یا هر نماد متوقف را شناسایی می‌کرد، بدون اینکه به اهمیت (Significance) آن توجه کند.
 
-تحلیل مشکل و راه‌حل نهایی
-مشکل Four_Price_Doji (دوجی چهار قیمت):
-
-اشکال قبلی: فیلتر حجم (> 10% میانگین) بسیار ضعیف بود. این باعث می‌شد هر سهمی که به هر دلیلی (حتی عدم معامله یا پر کردن حجم مبنای ناچیز) متوقف بوده، به عنوان یک الگوی معنادار شناسایی شود.
-
-اصلاح نهایی: این الگو (که نشانه‌ی صف خرید یا فروش قفل شده است) تنها زمانی اهمیت دارد که حجم معاملات آن واقعاً قابل توجه باشد.
-
-فیلتر جدید: حجم معامله امروز باید بیشتر از 50% میانگین حجم 20 روزه باشد و همچنین به صورت مطلق بیشتر از 500,000 سهم باشد. این کار تمام نمادهای کم‌اهمیت و متوقف که صف معناداری ندارند را حذف می‌کند.
-
-مشکل Spinning_Top (فرفره):
-
-اشکال قبلی: ما فقط "شکل" فرفره را شناسایی کردیم. اما یک فرفره به خودی خود یک الگو نیست؛ بلکه "بخشی" از یک الگو است که نشانه‌ی بلاتکلیفی است.
-
-اصلاح نهایی: این الگو تنها زمانی معنادار است که پس از یک روند قوی رخ دهد (که نشانه‌ی توقف روند است) و با حجم بالا تایید شود (که نشانه‌ی جدال واقعی خریدار و فروشنده است).
-
-فیلتر جدید (۱ - روند): این الگو فقط در صورتی شناسایی می‌شود که در 5 روز گذشته یک روند قوی (بیش از 8% رشد یا افت) وجود داشته باشد.
-
-فیلتر جدید (۲ - حجم): حجم معاملات امروز باید بیشتر از 80% میانگین حجم 20 روزه باشد.
-
-این دو تغییر، تعداد الگوهای کاذب را به شدت کاهش می‌دهد و فقط سیگنال‌هایی که از نظر آماری "مهم" هستند را به شما نشان می‌دهد.
-
-کد نهایی و تصحیح‌شده (نسخه ۴)
-Python
-
-import pandas as pd
-from typing import List
-
+        
 # ===============================
-# توابع اصلی تشخیص الگوها شمعی
+# توابع اصلی تشخیص الگوهای شمعی کامل‌شده
 # ===============================
+
 
 def check_candlestick_patterns(today_record: dict, yesterday_record: dict, historical_df: pd.DataFrame) -> List[str]:
     """
-    (نسخه ۴)
-    تشخیص الگوهای شمعی با فیلترهای سخت‌گیرانه‌تر برای حجم و روند
-    جهت حذف سیگنال‌های کاذب (Noise)
+    (نسخه کامل - بهبودیافته ۳)
+    تشخیص Doji، Spinning Top، و Inverted Hammer/Shooting Star با تمرکز بر تغییر روند.
+    فیلترهای TSE: رنج ±3%، حجم معنادار، تمایز صف.
     """
     patterns = []
 
-    # استخراج داده‌های امروز و دیروز (محافظت در برابر None/NaN)
+    # استخراج داده‌ها
     try:
         close = float(today_record.get('close', 0) or 0)
         open_ = float(today_record.get('open', 0) or 0)
@@ -461,10 +434,6 @@ def check_candlestick_patterns(today_record: dict, yesterday_record: dict, histo
         volume = float(today_record.get('volume', 0) or 0)
 
         prev_close = float(yesterday_record.get('close', 0) or 0)
-        prev_open = float(yesterday_record.get('open', 0) or 0)
-        prev_high = float(yesterday_record.get('high', 0) or 0)
-        prev_low = float(yesterday_record.get('low', 0) or 0)
-        prev_volume = float(yesterday_record.get('volume', 0) or 0)
     except Exception:
         return patterns 
 
@@ -474,432 +443,203 @@ def check_candlestick_patterns(today_record: dict, yesterday_record: dict, histo
     lower_shadow = min(open_, close) - low
     upper_shadow = high - max(open_, close)
 
-    # میانگین حجم 20 روزه و میانگین رنج 5 روزه
-    volume_ma_20 = historical_df['volume'].tail(20).mean() if len(historical_df) >= 20 else (volume or 1)
-    avg_range_5d = calculate_average_range(historical_df, 5)
+    # فیلتر رنج ±3% (TSE)
+    if prev_close > 0:
+        price_change_pct = abs((close - prev_close) / prev_close * 100)
+        if price_change_pct > 3.1:
+            return patterns
 
+    # میانگین‌ها
+    volume_ma_20 = historical_df['volume'].tail(20).mean() if len(historical_df) >= 20 else volume or 1
+    avg_range_5d = calculate_average_range(historical_df, 5)
     if volume_ma_20 <= 0:
         volume_ma_20 = volume or 1.0
 
-    # فیلتر اولیه: حذف نمادهای با حجم بسیار پایین (غیر از دوجی چهار قیمت)
-    if total_range > 0 and volume < (volume_ma_20 * 0.25):
-         return patterns
+    # فیلتر حجم اولیه: >40% MA
+    if volume < (volume_ma_20 * 0.4):
+        return patterns
 
-    # --- Trend Definition (shared by most patterns) ---
-    trend_5d_ending_yesterday = 0.0
-    trend_10d_ending_yesterday = 0.0
-    
-    if len(historical_df) >= 6: 
+    # روندها (پایان دیروز)
+    trend_5d = 0.0
+    trend_10d = 0.0
+    if len(historical_df) >= 6:
         trend_df_5d = historical_df.iloc[-6:-1]
-        trend_5d_ending_yesterday = calculate_trend(trend_df_5d, period=5)
-    
-    if len(historical_df) >= 11: 
+        trend_5d = calculate_trend(trend_df_5d, period=5)
+    if len(historical_df) >= 11:
         trend_df_10d = historical_df.iloc[-11:-1]
-        trend_10d_ending_yesterday = calculate_trend(trend_df_10d, period=10)
+        trend_10d = calculate_trend(trend_df_10d, period=10)
 
-    # --- Doji (اصلاح شده) ---
+    # فیلتر روند: >3% تغییر
+    significant_trend = abs(trend_5d) > 0.03 or abs(trend_10d) > 0.03
+    if not significant_trend:
+        return patterns
+
+    # Doji Patterns (با تمایز صف)
     patterns.extend(check_doji_patterns(
-        open_, close, high, low, volume,
+        open_, close, high, low, volume, prev_close,
         total_range, body, upper_shadow, lower_shadow,
-        volume_ma_20, avg_range_5d, trend_10d_ending_yesterday, historical_df
+        volume_ma_20, avg_range_5d, trend_10d, historical_df
     ))
     
-    # --- Spinning Top (اصلاح شده) ---
+    # Spinning Top
     patterns.extend(check_spinning_top(
         total_range, body, upper_shadow, lower_shadow, avg_range_5d,
-        volume, volume_ma_20, trend_5d_ending_yesterday
+        volume, volume_ma_20, trend_5d
     ))
 
-    # --- Hammer / Hanging Man ---
-    patterns.extend(check_hammer_hanging_man(
-        open_, close, high, low,
-        total_range, body, upper_shadow, lower_shadow,
-        trend_5d_ending_yesterday, historical_df
-    ))
-    
-    # --- Inverted Hammer / Shooting Star ---
+    # Inverted Hammer / Shooting Star (جدید)
     patterns.extend(check_inverted_hammer_shooting_star(
-        open_, close, high, low,
-        total_range, body, upper_shadow, lower_shadow,
-        trend_5d_ending_yesterday, historical_df
-    ))
-
-    # --- Engulfing (Bullish / Bearish) ---
-    patterns.extend(check_engulfing_patterns(
-        open_, close, prev_open, prev_close,
-        high, low, prev_high, prev_low,
-        body, total_range, volume, prev_volume, 
-        volume_ma_20, avg_range_5d, trend_5d_ending_yesterday
-    ))
-
-    # --- Morning Star / Evening Star ---
-    patterns.extend(check_star_patterns(historical_df))
-
-    # --- Harami ---
-    patterns.extend(check_harami_pattern(
-        open_, close, high, low,
-        prev_open, prev_close, prev_high, prev_low,
-        volume, prev_volume, avg_range_5d, trend_10d_ending_yesterday
-    ))
-
-    # --- Piercing Line / Dark Cloud Cover ---
-    patterns.extend(check_piercing_darkcloud_patterns(
-        open_, close, high, low,
-        prev_open, prev_close, prev_high, prev_low,
-        volume, prev_volume, avg_range_5d, trend_5d_ending_yesterday
+        open_, close, high, low, total_range, body, upper_shadow, lower_shadow,
+        trend_5d, historical_df
     ))
 
     return patterns
 
 
 # ===============================
-# الگوهای فرعی و فیلترهای تخصصی
+# الگوهای فرعی
 # ===============================
 
-def check_doji_patterns(open_, close, high, low, volume,
+def check_doji_patterns(open_, close, high, low, volume, prev_close,
                         total_range, body, upper_shadow, lower_shadow,
                         volume_ma_20, avg_range_5d, trend_10d, historical_df):
-    """(اصلاح شده) فیلتر حجم بسیار سخت‌گیرانه‌تر برای دوجی چهار قیمت"""
+    """
+    Doji با تمایز صف خرید/فروش.
+    """
     patterns = []
 
-    # (اصلاح ۱) بررسی دوجی چهار قیمت (مخصوص بازار ایران - صف خرید/فروش)
+    # Four_Price (صف)
     if total_range <= 0:
-        # O=H=L=C
-        # (اصلاح نهایی) فیلتر حجم بسیار سخت‌گیرانه‌تر:
-        # 1. حجم باید حداقل 50% میانگین 20 روزه باشد
-        # 2. حجم باید حداقل 500,000 سهم باشد (حذف نمادهای بی‌اهمیت)
-        is_significant_volume = (volume / (volume_ma_20 or 1) > 0.5) and (volume > 500000)
-        
-        if body == 0 and is_significant_volume:
-            patterns.append("Four_Price_Doji (دوجی چهار قیمت)")
-        return patterns 
+        is_significant_volume = (volume / volume_ma_20 > 0.7) and (volume > 1000000)
+        if is_significant_volume and abs(trend_10d) > 0.03:
+            if close > prev_close * 1.02:
+                patterns.append("Buy_Lock (صف خرید - تغییر صعودی)")
+            elif close < prev_close * 0.98:
+                patterns.append("Sell_Lock (صف فروش - تغییر نزولی)")
+            else:
+                patterns.append("Four_Price_Doji (دوجی چهار قیمت - neutral)")
+        return patterns
 
+    # Doji معمولی
     body_to_range_ratio = body / total_range if total_range > 0 else 1.0
-
-    # فیلتر سخت‌گیرانه دوجی: بدنه باید کمتر از 7% کل رنج باشد
-    if body_to_range_ratio >= 0.07:
+    if body_to_range_ratio >= 0.04:
         return patterns
 
-    # فیلتر رنج: کندل نباید خیلی کوچک باشد
-    if total_range < (avg_range_5d * 0.35 if avg_range_5d > 0 else 0):
-        return patterns
-    
-    # فیلتر حجم: حجم نباید خیلی کمتر از میانگین باشد
-    volume_ratio = volume / volume_ma_20 if volume_ma_20 > 0 else 1
-    if volume_ratio < 0.5:
+    if total_range < (avg_range_5d * 0.4) or volume / volume_ma_20 < 0.6:
         return patterns
 
-    # بررسی موقعیت در روند (برای دوجی سنگ قبر و سنجاقک)
+    # انواع Doji
     if len(historical_df) >= 10:
         recent_high_10d = historical_df['high'].tail(10).max()
         recent_low_10d = historical_df['low'].tail(10).min()
-        is_near_high = (high >= recent_high_10d * 0.97)
-        is_near_low = (low <= recent_low_10d * 1.03)
+        is_near_high = high >= recent_high_10d * 0.98
+        is_near_low = low <= recent_low_10d * 1.02
 
         lower_shadow_ratio = lower_shadow / total_range
         upper_shadow_ratio = upper_shadow / total_range
 
-        # تعریف سخت‌گیرانه‌تر: سایه اصلی > 65%، سایه مخالف < 15%
-        if upper_shadow_ratio > 0.65 and lower_shadow_ratio < 0.15 and trend_10d > 0.1 and is_near_high:
-            patterns.append("Gravestone_Doji (دوجی سنگ قبر)")
-        elif lower_shadow_ratio > 0.65 and upper_shadow_ratio < 0.15 and trend_10d < -0.1 and is_near_low:
-            patterns.append("Dragonfly_Doji (دوجی سنجاقک)")
+        if upper_shadow_ratio > 0.6 and lower_shadow_ratio < 0.1 and trend_10d > 0.03 and is_near_high:
+            patterns.append("Gravestone_Doji (دوجی سنگ قبر - تغییر نزولی)")
+        elif lower_shadow_ratio > 0.6 and upper_shadow_ratio < 0.1 and trend_10d < -0.03 and is_near_low:
+            patterns.append("Dragonfly_Doji (دوجی سنجاقک - تغییر صعودی)")
+        else:
+            patterns.append("Standard_Doji (دوجی استاندارد - عدم تصمیم)")
 
     return patterns
+
 
 def check_spinning_top(total_range, body, upper_shadow, lower_shadow, avg_range_5d,
                        volume, volume_ma_20, trend_5d):
-    """(اصلاح نهایی) تشخیص فرفره فقط در صورت وجود روند و حجم معنادار"""
+    """
+    Spinning Top.
+    """
     patterns = []
     
-    # 1. فیلتر: شکل (Shape)
-    if total_range <= 0 or total_range < avg_range_5d * 0.4:
+    if total_range <= 0 or total_range < avg_range_5d * 0.5:
         return patterns 
+    
     body_ratio = body / total_range
-    if body_ratio < 0.07 or body_ratio > 0.30:
+    if body_ratio < 0.05 or body_ratio > 0.25:
         return patterns
-    if lower_shadow < body or upper_shadow < body:
+    
+    if lower_shadow < body * 1.5 or upper_shadow < body * 1.5:
         return patterns
-    max_shadow = max(lower_shadow, upper_shadow)
-    min_shadow = min(lower_shadow, upper_shadow)
-    if max_shadow == 0: return patterns
-    if (min_shadow * 3) < max_shadow:
+    
+    shadow_diff = abs(upper_shadow - lower_shadow) / max(upper_shadow, lower_shadow)
+    if shadow_diff > 0.2:
         return patterns
 
-    # 2. (اصلاح نهایی) فیلتر: زمینه (Context) - باید پس از یک روند قوی باشد
-    is_significant_trend = abs(trend_5d) > 0.08 # حداقل 8% حرکت در 5 روز
+    is_significant_trend = abs(trend_5d) > 0.03
     if not is_significant_trend:
         return patterns
         
-    # 3. (اصلاح نهایی) فیلتر: اهمیت (Significance) - حجم باید نشانه‌ی جدال باشد
-    is_significant_volume = (volume / (volume_ma_20 or 1) > 0.8) # حداقل 80% میانگین
+    is_significant_volume = volume / volume_ma_20 > 0.7
     if not is_significant_volume:
         return patterns
 
-    patterns.append("Spinning_Top (فرفره)")
+    direction = "صعودی" if trend_5d < 0 else "نزولی"
+    patterns.append(f"Spinning_Top (فرفره - تغییر {direction})")
+    
     return patterns
 
-
-def check_hammer_hanging_man(open_, close, high, low,
-                             total_range, body, upper_shadow, lower_shadow,
-                             trend_5d, historical_df):
-    """تشخیص چکش و مرد آویزان با تعریف کلاسیک (سایه 2 برابر بدنه)"""
-    patterns = []
-    
-    if total_range <= 0 or body <= (total_range * 0.05):
-        return patterns
-
-    is_shape = (lower_shadow >= 2 * body) and (upper_shadow <= total_range * 0.10)
-    
-    if is_shape:
-        # Hammer (Bullish Reversal): Needs Downtrend
-        if trend_5d < -0.08: 
-            recent_low = historical_df['low'].tail(10).min()
-            if low <= recent_low * 1.02: 
-                patterns.append("Hammer (چکش)")
-                
-        # Hanging Man (Bearish Reversal): Needs Uptrend
-        elif trend_5d > 0.08: 
-            recent_high = historical_df['high'].tail(10).max()
-            if high >= recent_high * 0.98: 
-                patterns.append("Hanging_Man (مرد آویزان)")
-                
-    return patterns
 
 def check_inverted_hammer_shooting_star(open_, close, high, low,
                                         total_range, body, upper_shadow, lower_shadow,
                                         trend_5d, historical_df):
-    """تشخیص چکش وارونه و ستاره ثاقب با تعریف کلاسیک"""
+    """
+    (جدید) Inverted Hammer / Shooting Star با تمایز بر اساس روند.
+    ساختار: upper_shadow >= 2*body, lower_shadow <= 0.1*total_range, body کوچک.
+    """
     patterns = []
     
-    if total_range <= 0 or body <= (total_range * 0.05):
+    if total_range <= 0 or body <= (total_range * 0.05):  # بدنه کوچک
         return patterns
 
+    # فیلتر شکل
     is_shape = (upper_shadow >= 2 * body) and (lower_shadow <= total_range * 0.10)
     
-    if is_shape:
-        # Inverted Hammer (Bullish Reversal): Needs Downtrend
-        if trend_5d < -0.08:
-            patterns.append("Inverted_Hammer (چکش وارونه)")
-                
-        # Shooting Star (Bearish Reversal): Needs Uptrend
-        elif trend_5d > 0.08:
-            recent_high = historical_df['high'].tail(10).max()
-            if high >= recent_high * 0.98: 
-                patterns.append("Shooting_Star (شوتینگ استار)")
-                
-    return patterns
-
-
-def check_engulfing_patterns(open_, close, prev_open, prev_close,
-                             high, low, prev_high, prev_low,
-                             body, total_range, volume, prev_volume, 
-                             volume_ma_20, avg_range_5d, trend_5d):
-    """تشخیص پوشا با فیلتر روند و بدنه قوی‌تر"""
-    patterns = []
-
-    if total_range <= 0 or (prev_high - prev_low) <= 0:
+    if not is_shape:
         return patterns
 
-    today_body = abs(close - open_)
-    yesterday_body = abs(prev_close - prev_open)
-
-    if today_body < avg_range_5d * 0.1 or yesterday_body < avg_range_5d * 0.1:
+    # فیلتر حجم و رنج (نزدیک سقف/کف 10 روزه)
+    volume_ma_20 = historical_df['volume'].tail(20).mean() if len(historical_df) >= 20 else 1
+    if historical_df['volume'].iloc[-1] < volume_ma_20 * 0.5:  # حجم >50% MA
         return patterns
 
-    is_uptrend = trend_5d > 0.08 
-    is_downtrend = trend_5d < -0.08 
+    if len(historical_df) >= 10:
+        recent_high_10d = historical_df['high'].tail(10).max()
+        recent_low_10d = historical_df['low'].tail(10).min()
+        is_near_high = high >= recent_high_10d * 0.98
+        is_near_low = low <= recent_low_10d * 1.02
 
-    # ---------- Bullish Engulfing (پوشای صعودی) ----------
-    is_pattern_shape_bullish = (prev_close < prev_open and close > open_)
-    
-    if is_downtrend and is_pattern_shape_bullish:
-        full_engulf = (open_ <= prev_close + (0.001 * prev_close)) and (close >= prev_open - (0.001 * prev_open))
-        if full_engulf and today_body > yesterday_body: 
-            patterns.append("Bullish_Engulfing (پوشای صعودی)")
+        # Inverted Hammer: Downtrend + نزدیک کف
+        if trend_5d < -0.03 and is_near_low:
+            patterns.append("Inverted_Hammer (چکش وارونه - تغییر صعودی)")
 
-    # ---------- Bearish Engulfing (پوشای نزولی) ----------
-    is_pattern_shape_bearish = (prev_close > prev_open and close < open_)
-    
-    if is_uptrend and is_pattern_shape_bearish:
-        full_engulf = (open_ >= prev_close - (0.001 * prev_close)) and (close <= prev_open + (0.001 * prev_open))
-        
-        yesterday_range = max(0.0, prev_high - prev_low)
-        yesterday_body_ratio = (yesterday_body / yesterday_range) if yesterday_range > 0 else 0
-        today_body_ratio = (today_body / total_range) if total_range > 0 else 0
-        
-        cond_yesterday_significant = yesterday_body_ratio >= 0.30 
-        cond_today_significant = today_body_ratio >= 0.30 
-
-        if full_engulf and today_body > yesterday_body and cond_yesterday_significant and cond_today_significant:
-            patterns.append("Bearish_Engulfing (پوشای نزولی)")
-
-    return patterns
-
-
-def check_star_patterns(historical_df: pd.DataFrame):
-    """تشخیص Morning و Evening Star با فیلتر روند سخت‌گیرانه‌تر"""
-    patterns = []
-    if len(historical_df) < 8: 
-        return patterns
-
-    trend_df = historical_df.iloc[-8:-3]
-    trend_5d = calculate_trend(trend_df, period=5)
-    
-    is_uptrend = trend_5d > 0.08 
-    is_downtrend = trend_5d < -0.08
-    
-    d1, d2, d3 = historical_df.iloc[-3], historical_df.iloc[-2], historical_df.iloc[-1]
-    
-    try:
-        d1_open, d1_close = float(d1['open']), float(d1['close'])
-        d2_open, d2_close = float(d2['open']), float(d2['close'])
-        d3_open, d3_close = float(d3['open']), float(d3['close'])
-        
-        d1_body = abs(d1_close - d1_open)
-        d2_body = abs(d2_close - d2_open)
-        d3_body = abs(d3_close - d3_open)
-
-        if d1_body == 0 or d3_body == 0: return patterns
-        if (d2_body > d1_body * 0.4) or (d2_body > d3_body * 0.4): return patterns 
-
-        # --- Morning Star (Bullish Reversal) ---
-        if (is_downtrend and 
-            (d1_close < d1_open) and (d3_close > d3_open) and 
-            (max(d2_open, d2_close) < d1_close) and 
-            (d3_close > (d1_open + d1_close) / 2)): 
-            
-            patterns.append("Morning_Star (ستاره صبحگاهی)")
-
-        # --- Evening Star (Bearish Reversal) ---
-        if (is_uptrend and
-            (d1_close > d1_open) and (d3_close < d3_open) and 
-            (min(d2_open, d2_close) > d1_close) and 
-            (d3_close < (d1_open + d1_close) / 2)): 
-            
-            patterns.append("Evening_Star (ستاره عصرگاهی)")
-    except Exception:
-        pass
-
-    return patterns
-
-
-def check_harami_pattern(open_, close, high, low, prev_open, prev_close, prev_high, prev_low,
-                         volume, prev_volume, avg_range_5d, trend_10d):
-    """تشخیص هارامی با افزودن فیلتر رنگ کندل دوم"""
-    patterns = []
-
-    body_today = abs(close - open_)
-    body_yesterday = abs(prev_close - prev_open)
-    range_today = high - low
-    range_yesterday = prev_high - prev_low
-
-    if not (min(open_, close) > min(prev_open, prev_close) and
-            max(open_, close) < max(prev_open, prev_close)):
-        return patterns
-
-    if range_yesterday <= 0 or range_today <= 0:
-        return patterns
-
-    if (body_yesterday / range_yesterday) < 0.40:
-        return patterns
-
-    if (body_today / range_today) > 0.40:
-        return patterns
-
-    is_uptrend = trend_10d > 0.08
-    is_downtrend = trend_10d < -0.08
-    
-    # Bullish Harami: Day 1 Red, Day 2 Green, in Downtrend
-    if (is_downtrend and 
-        (prev_close < prev_open) and (close > open_)): 
-        if volume < prev_volume * 0.9: 
-            patterns.append("Bullish_Harami (هارامی صعودی)")
-    
-    # Bearish Harami: Day 1 Green, Day 2 Red, in Uptrend
-    elif (is_uptrend and 
-          (prev_close > prev_open) and (close < open_)): 
-        if volume < prev_volume * 0.9: 
-            patterns.append("Bearish_Harami (هارامی نزولی)")
-
-    return patterns
-
-
-def check_piercing_darkcloud_patterns(open_, close, high, low, prev_open, prev_close, prev_high, prev_low,
-                                      volume, prev_volume, avg_range_5d, trend_5d):
-    """
-    تشخیص پیرسینگ و دارک کلود با فیلتر گپ (Gap) منطقی‌تر برای بازار ایران
-    """
-    patterns = []
-
-    is_uptrend = trend_5d > 0.08 
-    is_downtrend = trend_5d < -0.08
-    
-    try:
-        body_today = abs(close - open_)
-        body_yesterday = abs(prev_close - prev_open)
-        range_today = high - low
-        range_yesterday = prev_high - prev_low
-
-        if range_today <= 0 or range_yesterday <= 0 or body_today <= 0 or body_yesterday <= 0:
-            return patterns
-        
-        if (body_today / range_today) < 0.4 or (body_yesterday / range_yesterday) < 0.4:
-            return patterns
-    except Exception:
-        return patterns
-    
-    # --- Piercing Line (Bullish Reversal) ---
-    try:
-        midpoint_day1_body = (prev_open + prev_close) / 2
-        
-        if (is_downtrend and
-            (prev_close < prev_open) and (close > open_) and
-            (open_ < prev_close) and 
-            (close > midpoint_day1_body) and
-            (close < prev_open)): 
-            
-            patterns.append("Piercing_Line (پیرسینگ لاین)")
-    except Exception:
-        pass
-
-    # --- Dark Cloud Cover (Bearish Reversal) ---
-    try:
-        midpoint_day1_body = (prev_open + prev_close) / 2
-        
-        if (is_uptrend and
-            (prev_close > prev_open) and (close < open_) and
-            (open_ > prev_close) and 
-            (close < midpoint_day1_body) and
-            (close > prev_open)): 
-            
-            patterns.append("Dark_Cloud_Cover (دارک کلود کاور)")
-    except Exception:
-        pass
+        # Shooting Star: Uptrend + نزدیک سقف
+        elif trend_5d > 0.03 and is_near_high:
+            patterns.append("Shooting_Star (شوتینگ استار - تغییر نزولی)")
 
     return patterns
 
 
 # ===============================
-# توابع کمکی
+# توابع کمکی (بدون تغییر)
 # ===============================
 
-def calculate_average_range(df, period=5):
-    """محاسبه میانگین رنج (High - Low) در n دوره اخیر"""
+def calculate_average_range(df: pd.DataFrame, period: int = 5) -> float:
     try:
         if len(df) < period:
             period = len(df)
         if period == 0:
-            return 0
-            
+            return 0.0
         ranges = df['high'].tail(period) - df['low'].tail(period)
-        return ranges.mean()
+        return float(ranges.mean())
     except Exception:
-        return 0
+        return 0.0
 
 
 def calculate_trend(df: pd.DataFrame, period: int = 5) -> float:
-    """محاسبه درصد تغییر قیمت پایانی در n دوره"""
     if df is None or len(df) < 2:
         return 0.0
     
