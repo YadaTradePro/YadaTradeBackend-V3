@@ -24,8 +24,7 @@ from services.index_data_processor import store_market_indices_data
 from services.sector_analysis_service import run_daily_sector_analysis
 
 
-from services.performance_service import close_and_evaluate_weekly_signals
-from services.performance_service import calculate_and_save_aggregated_performance
+from services.performance_service import run_weekly_performance_pipeline
 
 from services.data_fetcher import run_full_rebuild
 
@@ -227,47 +226,17 @@ JOBS = [
 
 
 
-    {
-    "id": "weekly_close_and_evaluate_signals_job",
-    "func": close_and_evaluate_weekly_signals,
-    "trigger": "cron",
-    "day_of_week": "thu",
-    "hour": 21,
-    "minute": 30
-    },
-
 
 
     {
     "id": "weekly_calculate_aggregated_performance_job",
-    "func": calculate_and_save_aggregated_performance,
+    "func": run_weekly_performance_pipeline,
     "trigger": "cron",
     "day_of_week": "thu",
     "hour": 21,
     "minute": 45,
     "kwargs": {"period_type": "weekly"}
     },
-
-
-
-    {
-    "id": "monthly_aggregated_performance_job",
-    "func": calculate_and_save_aggregated_performance,
-    "trigger": "cron",
-    "day_of_week": "fri",
-    "hour": 5,
-    "minute": 0,
-    "kwargs": {"period_type": "monthly"}
-    },
-    {
-    "id": "annual_aggregated_performance_job",
-    "func": calculate_and_save_aggregated_performance,
-    "trigger": "cron",
-    "day_of_week": "fri",
-    "hour": 5,
-    "minute": 15,
-    "kwargs": {"period_type": "annual"}
-},
 
 
 ]
