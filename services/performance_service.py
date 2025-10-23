@@ -8,6 +8,7 @@ import pandas as pd
 import logging
 from sqlalchemy import func, and_
 from typing import Optional, Tuple, List, Dict
+import uuid
 
 # Import utility functions (FIX: Removed the missing function 'get_last_market_day_date')
 from services.technical_analysis_utils import get_today_jdate_str, convert_gregorian_to_jalali 
@@ -15,7 +16,10 @@ from services.technical_analysis_utils import get_today_jdate_str, convert_grego
 logger = logging.getLogger(__name__)
 SIGNAL_SOURCE_WATCHLIST = 'WeeklyWatchlistService'
 
-# --- Helper function for market date determination (FIX for missing function) ---
+# --------------------------------------------------------------------------------
+# --- Helper Functions (REVISED) ---
+# --------------------------------------------------------------------------------
+
 def _get_last_market_day_date_gregorian(current_date: date) -> date:
     """
     Returns the last market day (non-Thursday/Friday) on or before current_date.
@@ -54,40 +58,54 @@ def safe_date_format(date_obj, fmt='%Y-%m-%d'):
         return date_obj.strftime(fmt)
     return None
 
-def get_latest_symbol_price(symbol_id: str) -> Optional[float]:
+def get_latest_symbol_price(symbol_id: str) -> Optional[Tuple[Optional[float], date]]:
     """
-    Retrieves the latest available market final or closing price for a symbol
-    from the HistoricalData table based on the last calculated market day.
-    This price is used as the Exit Price for closing a signal.
+    Retrieves the latest available market price and its date.
+    Prioritizes price on the calculated last market day. If not found,
+    searches for the absolute latest price available in the database.
+    Returns: A tuple of (price: Optional[float], price_date_gregorian: date).
     """
-    # 1. تعیین تاریخ آخرین روز معاملاتی
     current_greg_date = date.today()
     last_market_date_gregorian = _get_last_market_day_date_gregorian(current_greg_date)
-
-    logger.debug(f"Retrieving price for {symbol_id} on last market day: {last_market_date_gregorian}")
-
-    # 2. کوئری جدول HistoricalData برای نماد و تاریخ مشخص
+    
+    # 1. تلاش برای بازیابی قیمت در آخرین روز بازار محاسبه شده
     latest_price_data = db.session.query(HistoricalData).filter(
         HistoricalData.symbol_id == symbol_id,
         HistoricalData.date == last_market_date_gregorian
     ).first()
 
-    # 3. استخراج قیمت
-    if latest_price_data:
-        # اولویت با 'final' (آخرین قیمت معامله)
-        if latest_price_data.final is not None:
-            return latest_price_data.final
-        
-        # در صورت نبود final، از 'close' (قیمت پایانی) استفاده شود
-        if latest_price_data.close is not None:
-            return latest_price_data.close
+    price = None
+    price_date = last_market_date_gregorian # فرض اولیه، تاریخ آخرین روز بازار است
 
-    # 4. در صورت نبود داده برای آخرین روز معاملاتی یا خالی بودن قیمت‌ها
-    logger.warning(
-        f"Could not retrieve 'final' or 'close' price for symbol_id: {symbol_id} "
-        f"on the calculated last market day: {last_market_date_gregorian}"
-    )
-    return None
+    if latest_price_data:
+        price = latest_price_data.final if latest_price_data.final is not None else latest_price_data.close
+    
+    # 2. اگر قیمتی برای تاریخ محاسبه‌شده پیدا نشد، آخرین قیمت موجود را بازیابی کن
+    if price is None and symbol_id != "any_symbol":
+        logger.warning(
+            f"No price found for {symbol_id} on {safe_date_format(price_date)}. "
+            f"Searching for the absolute latest price in DB."
+        )
+        # کوئری برای آخرین قیمت موجود در دیتابیس برای این نماد
+        latest_price_data = db.session.query(HistoricalData).filter(
+            HistoricalData.symbol_id == symbol_id
+        ).order_by(HistoricalData.date.desc()).first()
+        
+        if latest_price_data:
+            price = latest_price_data.final if latest_price_data.final is not None else latest_price_data.close
+            price_date = latest_price_data.date # تاریخ واقعی قیمت را جایگزین کن
+            logger.info(f"Found latest price for {symbol_id} on {safe_date_format(price_date)}.")
+
+    if price is None:
+        logger.warning(f"Could not retrieve price for symbol_id: {symbol_id} even using the absolute latest data.")
+
+    # برای نماد ساختگی، همیشه تاریخ آخرین روز بازار محاسبه‌شده را برگردان
+    if symbol_id == "any_symbol":
+        return (price, last_market_date_gregorian)
+        
+    # برای نمادهای واقعی، قیمت و تاریخ واقعی آن قیمت را برگردان
+    return (price, price_date)
+
 
 def calculate_pnl_percent(entry_price: float, exit_price: float) -> float:
     """Calculates profit/loss percentage."""
@@ -95,225 +113,260 @@ def calculate_pnl_percent(entry_price: float, exit_price: float) -> float:
         return 0.0
     return ((exit_price - entry_price) / entry_price) * 100.0
 
-# --- Core Performance Evaluation Logic ---
+def check_sufficient_price_data(symbol_id: str, entry_date: date, required_days: int = 3) -> bool:
+    """Checks if there are at least 'required_days' of price data after entry_date."""
+    count = db.session.query(HistoricalData).filter(
+        HistoricalData.symbol_id == symbol_id,
+        HistoricalData.date > entry_date
+    ).count()
+    return count >= required_days
 
-def close_and_evaluate_weekly_signals(days_to_lookback: int = 7) -> Tuple[bool, str]:
+def determine_final_signal_status(profit_loss_percent: Optional[float]) -> str:
     """
-    Fulfills the core duty: finds active WeeklyWatchlist signals, 
-    evaluates their performance based on the latest price, and closes them.
-    Updates both WeeklyWatchlistResult and SignalsPerformance tables.
+    تعیین وضعیت نهایی (closed_win/closed_loss/closed_neutral) بر اساس درصد سود/زیان.
+    آستانه کوچک 0.005% برای مدیریت خطاهای گرد کردن در نظر گرفته شده است.
     """
-    logger.info("Starting weekly signal closure and performance evaluation.")
+    if profit_loss_percent is None:
+        return 'evaluated' # وضعیت موقت یا خطا
     
-    # تعیین بازه زمانی (سیگنال‌هایی که در هفته گذشته معرفی شده‌اند)
-    # تاریخ ورود سیگنال باید در بازه (today - days_to_lookback) تا (today) باشد
-    today_greg = jdatetime.date.today().togregorian()
-    
-    # تاریخ شروع برای فیلتر کردن سیگنال‌های فعال
-    start_date_greg = today_greg - timedelta(days=days_to_lookback)
-    start_jdate_str = convert_gregorian_to_jalali(start_date_greg)
-    
-    # تاریخ خروج (بستن سیگنال) - آخرین روز معاملاتی یا امروز (FIX: Use last market day for accuracy)
-    exit_date_greg = _get_last_market_day_date_gregorian(today_greg)
-    exit_jdate_str = convert_gregorian_to_jalali(exit_date_greg)
-    
-    logger.info(f"Searching for active signals entered since: {start_jdate_str}. Exit Date set to: {exit_jdate_str}")
-    
-    # 1. Fetch relevant active signals from WeeklyWatchlistResult
-    active_results = WeeklyWatchlistResult.query.filter(
-        WeeklyWatchlistResult.status == 'active',
-        WeeklyWatchlistResult.jentry_date >= start_jdate_str # سیگنال‌های فعال در بازه مورد نظر
-    ).all()
+    if profit_loss_percent > 0.005: 
+        return 'closed_win'
+    elif profit_loss_percent < -0.005:
+        return 'closed_loss'
+    else:
+        return 'closed_neutral'
 
-    if not active_results:
-        message = "No active WeeklyWatchlist signals found for closure in the specified period."
-        logger.warning(message)
-        # حتی اگر سیگنالی بسته نشد، باید عملکرد تجمعی را محاسبه کنیم
-        calculate_and_save_aggregated_performance(period_type='weekly', signal_source=SIGNAL_SOURCE_WATCHLIST)
-        return True, message
+# --------------------------------------------------------------------------------
+# --- Core Performance Pipeline (Combined Three-Phase Function - REVISED) ---
+# --------------------------------------------------------------------------------
 
-    closed_count = 0
+def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, str]:
+    """
+    Runs the full three-phase performance pipeline for WeeklyWatchlistService:
+    Phase 1: Close ALL active WeeklyWatchlist signals (with 3-day data check) and mark as 'evaluated'.
+    Phase 2: Create/Update SignalsPerformance records based on Phase 1 closures, setting final status (win/loss).
+    Phase 3: Calculate and update AggregatedPerformance (weekly, monthly, annual).
+    """
+    signal_source = SIGNAL_SOURCE_WATCHLIST
+    logger.info(f"--- Starting Three-Phase Performance Pipeline for {signal_source} ---")
     
-    for result in active_results:
-        symbol_id = result.symbol_id
-        entry_price = result.entry_price
-        
-        # 2. Get latest price (Exit Price)
-        exit_price = get_latest_symbol_price(symbol_id)
-        
-        if exit_price is None or entry_price is None:
-            logger.warning(f"Skipping closure for {result.symbol_name} ({symbol_id}): Missing entry or exit price.")
-            continue
-            
-        # 3. Calculate Performance
-        profit_loss_percent = calculate_pnl_percent(entry_price, exit_price)
-        
-        # 4. Determine Status
-        if profit_loss_percent > 0.005: # بیش از 0.5% سود
-            status = 'closed_win'
-        elif profit_loss_percent < -0.005: # کمتر از 0.5% ضرر
-            status = 'closed_loss'
-        else:
-            status = 'closed_neutral' # در نظر گرفتن معاملات خنثی
-            
-        # 5. Update WeeklyWatchlistResult
-        result.status = status
-        result.exit_price = exit_price
-        result.exit_date = exit_date_greg
-        result.jexit_date = exit_jdate_str
-        result.profit_loss_percentage = round(profit_loss_percent, 2)
-        db.session.add(result)
-
-        # 6. Update SignalsPerformance (Assume: A SignalsPerformance record exists with signal_id = WeeklyWatchlistResult.signal_unique_id)
-        performance_record = SignalsPerformance.query.filter_by(signal_id=result.signal_unique_id).first()
-        
-        if performance_record:
-            performance_record.status = status
-            performance_record.exit_price = exit_price
-            performance_record.exit_date = exit_date_greg
-            performance_record.jexit_date = exit_jdate_str
-            performance_record.profit_loss_percent = round(profit_loss_percent, 2)
-            performance_record.evaluated_at = datetime.now()
-            db.session.add(performance_record)
-            
-        closed_count += 1
-        logger.info(f"Closed {result.symbol_name}. Status: {status}, P/L: {profit_loss_percent:.2f}%")
-
-    # 7. Commit changes
     try:
+        # 1. Date Determination
+        today_greg = jdatetime.date.today().togregorian()
+        
+        # تاریخ آخرین قیمت و خروج (استفاده از "any_symbol" فقط برای تعیین تاریخ)
+        exit_price_dummy, exit_date_greg = get_latest_symbol_price("any_symbol")
+        
+        # بررسی قطعی تاریخ
+        if exit_date_greg is None:
+             return False, "Failed to determine the latest market date for pipeline execution."
+        
+        exit_jdate_str = convert_gregorian_to_jalali(exit_date_greg)
+        
+        # متغیرهای فعال مربوط به فیلتر تاریخ حذف شدند
+        
+        logger.info(f"Pipeline Exit Date: {exit_jdate_str}. Checking ALL active signals for closure.")
+
+        # --- PHASE 1: Close WeeklyWatchlist Signals (Mark as 'evaluated') ---
+        
+        # انتخاب تمام سیگنال‌های فعال (بدون محدودیت تاریخ ورود)
+        active_results = WeeklyWatchlistResult.query.filter(
+            WeeklyWatchlistResult.status == 'active',
+            # شرط محدودکننده تاریخ ورود حذف شد
+        ).all()
+        
+        closed_count = 0
+        signals_to_process = []
+        
+        for result in active_results:
+            symbol_id = result.symbol_id
+            entry_price = result.entry_price
+            # ⬅️ اصلاح: حذف متد .date()
+            entry_date_greg = result.entry_date 
+
+            # 1.1. Minimum 3 days data check
+            if not check_sufficient_price_data(symbol_id, entry_date_greg, required_days=3):
+                logger.debug(f"Skipping {result.symbol_name}: Less than 3 prices available after entry date.")
+                continue
+                
+            # 1.2. Get latest price (Exit Price)
+            current_exit_price, _ = get_latest_symbol_price(symbol_id)
+
+            if current_exit_price is None or entry_price is None:
+                logger.warning(f"Skipping closure for {result.symbol_name}: Missing exit price or entry price.")
+                continue
+                
+            # 1.3. Calculate P/L and Update WeeklyWatchlistResult
+            profit_loss_percent = calculate_pnl_percent(entry_price, current_exit_price)
+            
+            result.status = 'evaluated' # وضعیت موقت برای WeeklyWatchlistResult
+            result.exit_price = current_exit_price
+            result.exit_date = exit_date_greg
+            result.jexit_date = exit_jdate_str
+            result.profit_loss_percentage = round(profit_loss_percent, 2)
+            db.session.add(result)
+            
+            signals_to_process.append(result)
+            closed_count += 1
+            logger.debug(f"P1: Closed {result.symbol_name}. Status: 'evaluated', P/L: {profit_loss_percent:.2f}%")
+
+        logger.info(f"Phase 1 Complete: {closed_count} signals updated in WeeklyWatchlistResult to 'evaluated'.")
+
+        # --- PHASE 2: Update/Create SignalsPerformance Records ---
+        
+        sp_updated_count = 0
+        sp_created_count = 0
+        
+        for result in signals_to_process:
+            # ⬅️ تغییر کلیدی فاز ۲: محاسبه و ثبت وضعیت نهایی عملکرد
+            final_status = determine_final_signal_status(result.profit_loss_percentage)
+            
+            # Check if SignalsPerformance record already exists (based on signal_unique_id)
+            performance_record = SignalsPerformance.query.filter_by(signal_id=result.signal_unique_id).first()
+            
+            if performance_record:
+                # Update existing record 
+                performance_record.status = final_status # ⬅️ اصلاح: استفاده از وضعیت نهایی
+                performance_record.exit_price = result.exit_price
+                performance_record.exit_date = result.exit_date
+                performance_record.jexit_date = result.jexit_date
+                performance_record.profit_loss_percent = result.profit_loss_percentage
+                performance_record.evaluated_at = datetime.now()
+                db.session.add(performance_record)
+                sp_updated_count += 1
+                logger.debug(f"P2: Updated SignalsPerformance for {result.symbol_name}. Status: {final_status}")
+            else:
+                # Create new SignalsPerformance record 
+                new_sp = SignalsPerformance(
+                    # Signal Data
+                    # NOTE: Added safety check for signal_unique_id and symbol_name
+                    signal_id=result.signal_unique_id if hasattr(result, 'signal_unique_id') and result.signal_unique_id else str(uuid.uuid4()),
+                    symbol_id=result.symbol_id,
+                    symbol_name=result.symbol_name,
+                    signal_source=signal_source,
+                    entry_date=result.entry_date,
+                    jentry_date=result.jentry_date,
+                    entry_price=result.entry_price,
+                    outlook=result.outlook,
+                    reason=getattr(result, 'reason', None), 
+                    probability_percent=getattr(result, 'probability_percent', None),
+                    
+                    # Exit/Evaluation Data
+                    exit_date=result.exit_date,
+                    jexit_date=result.jexit_date,
+                    exit_price=result.exit_price,
+                    profit_loss_percent=result.profit_loss_percentage,
+                    status=final_status, # ⬅️ اصلاح: استفاده از وضعیت نهایی
+                    created_at=result.created_at, 
+                    evaluated_at=datetime.now()
+                )
+                db.session.add(new_sp)
+                sp_created_count += 1
+                logger.debug(f"P2: Created new SignalsPerformance for {result.symbol_name}. Status: {final_status}")
+
+        logger.info(f"Phase 2 Complete: {sp_updated_count} records updated, {sp_created_count} records created in SignalsPerformance.")
+
+
+        # --- PHASE 3: Calculate and Update AggregatedPerformance ---
+        
+        report_date_str = get_today_jdate_str()
+        
+        # 3.1. Define aggregation periods and process them
+        aggregation_periods = [
+            ('weekly', timedelta(days=7)),
+            ('monthly', timedelta(days=30)),
+            ('annual', timedelta(days=365))
+        ]
+        
+        for period_type, delta in aggregation_periods:
+            start_date_greg_agg = exit_date_greg - delta
+            start_jdate_str_agg = convert_gregorian_to_jalali(start_date_greg_agg)
+            end_jdate_str_agg = exit_jdate_str
+            
+            logger.info(f"P3: Calculating {period_type} performance from {start_jdate_str_agg} to {end_jdate_str_agg}.")
+
+            # Query: Filter SignalsPerformance based on jexit_date AND FINAL statuses
+            signals_in_period = SignalsPerformance.query.filter(
+                SignalsPerformance.signal_source == signal_source,
+                # ⬅️ تغییر کلیدی فاز ۳: فیلتر بر اساس وضعیت‌های نهایی
+                SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral']), 
+                SignalsPerformance.jexit_date >= start_jdate_str_agg,
+                SignalsPerformance.jexit_date <= end_jdate_str_agg 
+            ).all()
+
+            # 3.2. Performance Metrics Calculation
+            if not signals_in_period:
+                total_signals, successful_signals, win_rate, total_profit_percent, total_loss_percent, average_profit_per_win, average_loss_per_loss, net_profit_percent = 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                logger.warning(f"P3: No 'evaluated' signals found for {period_type} aggregation.")
+            else:
+                total_signals = len(signals_in_period)
+                
+                # تعیین Win/Loss بر اساس profit_loss_percent ثبت شده (معیار > 0.005% سود)
+                successful_signals = sum(1 for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent > 0.005)
+                
+                win_rate = (successful_signals / total_signals) * 100 if total_signals > 0 else 0.0
+                
+                winning_signals = [s for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent > 0]
+                losing_signals = [s for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent < 0]
+                
+                total_profit_percent = sum(s.profit_loss_percent for s in winning_signals)
+                total_loss_percent = abs(sum(s.profit_loss_percent for s in losing_signals))
+                
+                average_profit_per_win = (total_profit_percent / len(winning_signals)) if winning_signals else 0.0
+                average_loss_per_loss = (sum(s.profit_loss_percent for s in losing_signals) / len(losing_signals)) if losing_signals else 0.0 # این مقدار منفی است
+                
+                net_profit_percent = total_profit_percent + average_loss_per_loss 
+                logger.debug(f"P3 ({period_type}): Total: {total_signals}, Win Rate: {win_rate:.2f}%, Net P/L: {net_profit_percent:.2f}%")
+
+            # 3.3. Save/Update Aggregated Performance (Delete/Insert logic)
+            
+            # **اجرای منطق حذف/درج جدید**
+            # حذف رکوردهای قدیمی برای period_type و report_date امروز
+            db.session.query(AggregatedPerformance).filter(
+                AggregatedPerformance.report_date == report_date_str,
+                AggregatedPerformance.period_type == period_type,
+                AggregatedPerformance.signal_source == signal_source
+            ).delete(synchronize_session=False) # Delete previous records for today's report
+            
+            # درج رکورد جدید
+            new_agg_perf = AggregatedPerformance(
+                report_date=report_date_str,
+                period_type=period_type,
+                signal_source=signal_source,
+                total_signals=total_signals,
+                successful_signals=successful_signals,
+                win_rate=round(win_rate, 2),
+                total_profit_percent=round(total_profit_percent, 2),
+                total_loss_percent=round(total_loss_percent, 2),
+                average_profit_per_win=round(average_profit_per_win, 2),
+                average_loss_per_loss=round(average_loss_per_loss, 2),
+                net_profit_percent=round(net_profit_percent, 2),
+                created_at=datetime.now()
+            )
+            db.session.add(new_agg_perf)
+            logger.info(f"P3: Calculated and added NEW AggregatedPerformance record for {period_type}.")
+
+        # --- FINAL COMMIT ---
+        
+        logger.info("Phase 4: Attempting FINAL COMMIT for all three phases.")
         db.session.commit()
-        
-        # 8. Calculate Aggregated Performance after closing signals
-        success_agg, message_agg = calculate_and_save_aggregated_performance(period_type='weekly', signal_source=SIGNAL_SOURCE_WATCHLIST)
-        
-        final_message = f"Successfully closed and evaluated {closed_count} signals. {message_agg}"
-        logger.info(final_message)
-        return True, final_message
-        
-    except Exception as e:
-        db.session.rollback()
-        error_message = f"Critical error during weekly signal closure: {e}"
-        logger.error(error_message, exc_info=True)
-        return False, error_message
-
-# --- Aggregation and Reporting Functions ---
-
-def calculate_and_save_aggregated_performance(period_type='weekly', signal_source=SIGNAL_SOURCE_WATCHLIST) -> Tuple[bool, str]:
-    """
-    Calculates and saves AggregatedPerformance for a given period and signal source.
-    NOTE: The function signature is modified to accept 'signal_source' to fix the TypeError.
-    It enforces the signal source to SIGNAL_SOURCE_WATCHLIST for all internal calculations 
-    if that is the intended behavior of this file. 
-    However, since the previous code had hardcoded SIGNAL_SOURCE_WATCHLIST, we respect 
-    that and use the passed 'signal_source' argument only for logging/future-proofing 
-    but enforce filtering on SIGNAL_SOURCE_WATCHLIST.
-    """
-    
-    # Enforcing the specific source for which this service is primarily responsible
-    source_to_aggregate = SIGNAL_SOURCE_WATCHLIST
-    logger.info(f"Calculating aggregated performance for '{source_to_aggregate}' ({period_type}).")
-
-    today_gdate = jdatetime.date.today().togregorian()
-    start_jdate_str = None
-    
-    # Date Range Calculation
-    if period_type == 'weekly':
-        start_date_greg = today_gdate - timedelta(days=7)
-    elif period_type == 'monthly':
-        start_date_greg = today_gdate - timedelta(days=30)
-    elif period_type == 'annual':
-        start_date_greg = today_gdate - timedelta(days=365)
-    else:
-        return False, "Invalid period_type. Must be 'weekly', 'monthly', or 'annual'."
-
-    try:
-        start_jdate_str = convert_gregorian_to_jalali(start_date_greg)
-    except Exception as e:
-        logger.error(f"Error determining start date for {period_type} period: {e}", exc_info=True)
-        return False, f"Error determining start date for {period_type} period."
-
-    # Query Conditions
-    query_conditions = [
-        SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired']),
-        SignalsPerformance.signal_source == source_to_aggregate
-    ]
-    
-    if start_jdate_str:
-        query_conditions.append(SignalsPerformance.jentry_date >= start_jdate_str)
-
-    signals_in_period = SignalsPerformance.query.filter(and_(*query_conditions)).all()
-
-    # Performance Metrics Calculation
-    if not signals_in_period:
-        message = f"No closed signals found for {source_to_aggregate} ({period_type}) in the period starting {start_jdate_str}."
-        logger.warning(message)
-        total_signals, successful_signals, win_rate, total_profit_percent, total_loss_percent, average_profit_per_win, average_loss_per_loss, net_profit_percent = 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    else:
-        total_signals = len(signals_in_period)
-        # Successful signals are defined as those with profit > 0
-        successful_signals = sum(1 for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent > 0)
-        win_rate = (successful_signals / total_signals) * 100 if total_signals > 0 else 0.0
-        
-        total_profit_percent = sum(s.profit_loss_percent for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent > 0)
-        total_loss_percent = abs(sum(s.profit_loss_percent for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent < 0))
-        
-        winning_signals = [s for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent > 0]
-        losing_signals = [s for s in signals_in_period if s.profit_loss_percent is not None and s.profit_loss_percent < 0]
-        
-        average_profit_per_win = (sum(s.profit_loss_percent for s in winning_signals) / len(winning_signals)) if winning_signals else 0.0
-        # Average loss is stored as a negative number, abs() is used to present it as a positive average loss
-        average_loss_per_loss = (sum(s.profit_loss_percent for s in losing_signals) / len(losing_signals)) if losing_signals else 0.0
-        
-        net_profit_percent = total_profit_percent + average_loss_per_loss # average_loss_per_loss is negative, so it subtracts.
-
-    # Save/Update Aggregated Performance
-    report_date_str = get_today_jdate_str()
-    existing_agg_perf = AggregatedPerformance.query.filter_by(
-        report_date=report_date_str,
-        period_type=period_type,
-        signal_source=source_to_aggregate
-    ).first()
-
-    if existing_agg_perf:
-        existing_agg_perf.total_signals = total_signals
-        existing_agg_perf.successful_signals = successful_signals
-        existing_agg_perf.win_rate = round(win_rate, 2)
-        existing_agg_perf.total_profit_percent = round(total_profit_percent, 2)
-        existing_agg_perf.total_loss_percent = round(total_loss_percent, 2)
-        existing_agg_perf.average_profit_per_win = round(average_profit_per_win, 2)
-        existing_agg_perf.average_loss_per_loss = round(average_loss_per_loss, 2)
-        existing_agg_perf.net_profit_percent = round(net_profit_percent, 2)
-        existing_agg_perf.updated_at = datetime.now()
-        db.session.add(existing_agg_perf)
-        logger.info(f"Updated aggregated performance for {source_to_aggregate} ({period_type}) on {report_date_str}.")
-    else:
-        new_agg_perf = AggregatedPerformance(
-            report_date=report_date_str,
-            period_type=period_type,
-            signal_source=source_to_aggregate,
-            total_signals=total_signals,
-            successful_signals=successful_signals,
-            win_rate=round(win_rate, 2),
-            total_profit_percent=round(total_profit_percent, 2),
-            total_loss_percent=round(total_loss_percent, 2),
-            average_profit_per_win=round(average_profit_per_win, 2),
-            average_loss_per_loss=round(average_loss_per_loss, 2),
-            net_profit_percent=round(net_profit_percent, 2),
-            created_at=datetime.now()
-        )
-        db.session.add(new_agg_perf)
-        logger.info(f"Created new aggregated performance record for {source_to_aggregate} ({period_type}) on {report_date_str}.")
-    
-    try:
-        db.session.commit()
-        message = f"Aggregated performance for {source_to_aggregate} ({period_type}) calculated successfully. Win Rate: {win_rate:.2f}%."
+        message = f"Pipeline SUCCESS: {closed_count} signals evaluated. Aggregated performance (weekly, monthly, annual) successfully updated."
         logger.info(message)
         return True, message
+        
     except Exception as e:
         db.session.rollback()
-        error_message = f"Error during aggregated performance calculation: {e}"
+        error_message = f"Pipeline FAILED on FINAL COMMIT: {e}. ALL changes have been rolled back."
         logger.error(error_message, exc_info=True)
         return False, error_message
+
+
+
+
+
+
+
+
 
 def get_aggregated_performance_reports(period_type: Optional[str] = None, signal_source: Optional[str] = None) -> List[Dict]:
     """Retrieves filtered aggregated performance reports."""
@@ -361,6 +414,7 @@ def get_overall_performance_summary() -> Dict:
     
     signal_source = SIGNAL_SOURCE_WATCHLIST
 
+    # ⬅️ اصلاح وضعیت‌های بسته در Overall Summary: باید با وضعیت‌های جدید هماهنگ باشد
     all_signals = SignalsPerformance.query.filter(
         SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired']),
         SignalsPerformance.signal_source == signal_source
@@ -454,6 +508,7 @@ def get_annual_profit_loss_summary() -> float:
     start_of_jalali_year_str = f"{current_jalali_year}-01-01"
     signal_source = SIGNAL_SOURCE_WATCHLIST
 
+    # ⬅️ اصلاح وضعیت‌های بسته در Annual Summary: باید با وضعیت‌های جدید هماهنگ باشد
     annual_signals = SignalsPerformance.query.filter(
         SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired']),
         SignalsPerformance.jentry_date >= start_of_jalali_year_str,
@@ -491,6 +546,7 @@ def get_detailed_signals_performance(status_filter: Optional[str] = None, period
         start_jdate_str = convert_gregorian_to_jalali(start_date_greg)
 
         if start_jdate_str and end_jdate_str:
+            # ⬅️ اصلاح: فیلتر بر اساس وضعیت‌های نهایی
             query = query.filter(
                 SignalsPerformance.jexit_date >= start_jdate_str,
                 SignalsPerformance.jexit_date <= end_jdate_str,
@@ -503,6 +559,7 @@ def get_detailed_signals_performance(status_filter: Optional[str] = None, period
     
     # Filter only closed signals unless an explicit status is requested
     if not status_filter:
+         # ⬅️ اصلاح: فیلتر بر اساس وضعیت‌های نهایی
           query = query.filter(
               SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired'])
           )
