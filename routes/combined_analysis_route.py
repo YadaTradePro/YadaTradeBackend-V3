@@ -1,13 +1,13 @@
-# routes/combined_analysis_route.py
 import logging
 from flask_restx import Namespace, Resource, fields, reqparse
 from extensions import db
 import traceback
 import time
-from sqlalchemy import and_
+from sqlalchemy import and_, func, text, desc
 
-# اضافه کردن import برای مدل CandlestickPatternDetection
-from models import CandlestickPatternDetection, ComprehensiveSymbolData, HistoricalData
+from flask import request 
+
+from models import CandlestickPatternDetection, ComprehensiveSymbolData, HistoricalData, TechnicalIndicatorData, FundamentalData
 
 from services.combined_analysis_service import get_analysis_profile_for_symbols
 from services.market_analysis_orchestrator import run_comprehensive_market_analysis
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 SymbolAnalysis_ns = Namespace('SymbolAnalysis', description='Demand Analysis Engine')
 
 # =================================================================================
-# تعریف مدل‌های DTO (Data Transfer Object) برای Swagger
+# تعریف مدل‌های DTO (Data Transfer Object) برای Swagger (بدون تغییر، اما به‌روزرسانی برای هم‌خوانی با خروجی‌های جدید)
 # =================================================================================
 raw_historical_model = SymbolAnalysis_ns.model('RawHistorical', {
     'jdate': fields.String,
@@ -78,17 +78,16 @@ symbol_analysis_profile_model = SymbolAnalysis_ns.model('SymbolAnalysisProfile',
     'processed': fields.Nested(processed_model)
 })
 
-# 🔥 مدل جدید برای تحلیل جامع بازار
+# به‌روزرسانی مدل برای هم‌خوانی با خروجی‌های جدید (technical_analysis, fundamental_analysis, sentiment_analysis)
+# symbol_results حالا Raw برای پوشش nested dicts (trend_analysis, momentum_analysis, etc.)
 comprehensive_analysis_response_model = SymbolAnalysis_ns.model('ComprehensiveAnalysisResponse', {
     'status': fields.String(example="success"),
-    'analysis_type': fields.String(description="نوع تحلیل انجام شده"),
-    'technical_analysis': fields.Raw(description="نتایج تحلیل تکنیکال"),
-    'fundamental_analysis': fields.Raw(description="نتایج تحلیل فاندامنتال"),
-    'sentiment_analysis': fields.Raw(description="نتایج تحلیل سنتیمنت"),
-    'market_overview': fields.Raw(description="نمای کلی بازار"),
-    'anomalies_detected': fields.Raw(description="آنومالی‌های شناسایی شده"),
+    'analysis_type': fields.String(description="نوع تحلیل انجام شده: Comprehensive & Filtered"),
     'execution_time': fields.Float(description="زمان اجرا به ثانیه"),
-    'timestamp': fields.String(description="زمان تولید گزارش")
+    'timestamp': fields.String(description="زمان تولید گزارش"),
+    'market_overview': fields.Raw(description="نمای کلی بازار (شاخص‌ها، صنایع برتر و...)"),
+    'global_anomalies': fields.Raw(attribute='anomalies_detected', description="آنومالی‌های شناسایی شده در کل بازار (با confidence و recommendation)"),
+    'symbol_results': fields.Raw(description="نتایج تحلیلی نمادهای درخواست شده (Technical: trend/momentum/volume/pattern; Fundamental: valuation/capital_flow; Sentiment: score/outlook)")
 })
 
 combined_analysis_response_model = SymbolAnalysis_ns.model('CombinedAnalysisResponse', {
@@ -97,7 +96,6 @@ combined_analysis_response_model = SymbolAnalysis_ns.model('CombinedAnalysisResp
     'message': fields.String(description="پیام خطا در صورت شکست کلی")
 })
 
-# 🔥 مدل جدید برای کندل استیک
 candlestick_pattern_model = SymbolAnalysis_ns.model('CandlestickPattern', {
     'symbol_id': fields.String(description="شناسه نماد"),
     'symbol_name': fields.String(description="نام نماد"),
@@ -108,7 +106,8 @@ candlestick_pattern_model = SymbolAnalysis_ns.model('CandlestickPattern', {
     'pattern_name_english': fields.String(description="نام انگلیسی الگو"),
     'pattern_name_persian': fields.String(description="نام فارسی الگو"),
     'pattern_type': fields.String(description="نوع الگو (Bullish/Bearish/Neutral)"),
-    'created_at': fields.String(description="زمان ایجاد رکورد")
+    'created_at': fields.String(description="زمان ایجاد رکورد"),
+    'technical_data': fields.Raw(description="خلاصه داده‌های تکنیکال مرتبط با الگو")
 })
 
 candlestick_response_model = SymbolAnalysis_ns.model('CandlestickResponse', {
@@ -126,26 +125,11 @@ combined_analysis_parser = reqparse.RequestParser()
 combined_analysis_parser.add_argument(
     'symbols', type=str, required=True,
     help='Comma-separated list of symbol names (e.g., "خودرو,خساپا")', 
-    location='args', # اطمینان از اینکه از query string خوانده می‌شود
+    location='args', # از query string خوانده می‌شود (همانند قبل)
     action='split'
 )
 
-# 🔥 Parser جدید برای تحلیل جامع
-comprehensive_analysis_parser = reqparse.RequestParser()
-comprehensive_analysis_parser.add_argument(
-    'symbols', type=list, location='json', required=False,
-    help='لیست نمادهای خاص برای تحلیل (در صورت عدم ارسال، همه نمادها تحلیل می‌شوند)'
-)
-comprehensive_analysis_parser.add_argument(
-    'limit', type=int, location='json', required=False,
-    help='محدودیت تعداد نمادها برای تحلیل'
-)
-comprehensive_analysis_parser.add_argument(
-    'analysis_types', type=list, location='json', required=False, default=['technical', 'fundamental', 'sentiment'],
-    help='انواع تحلیل‌های مورد نیاز (technical, fundamental, sentiment)'
-)
-
-# 🔥 Parser جدید برای کندل استیک
+# ... (سایر Parserها: candlestick_parser, advanced_candlestick_parser) ...
 candlestick_parser = reqparse.RequestParser()
 candlestick_parser.add_argument(
     'symbol_id', type=str, required=False,
@@ -166,7 +150,7 @@ candlestick_parser.add_argument(
 )
 
 
-# 🔥 Parser جدید برای فیلترهای پیشرفته
+# Parser جدید برای فیلترهای پیشرفته (حفظ شد)
 advanced_candlestick_parser = reqparse.RequestParser()
 advanced_candlestick_parser.add_argument(
     'symbol_id', type=str, required=False,
@@ -210,7 +194,6 @@ advanced_candlestick_parser.add_argument(
     location='args'
 )
 
-
 # =================================================================================
 # تعریف اندپوینت‌ها (Controller)
 # =================================================================================
@@ -223,11 +206,12 @@ class CombinedAnalysisResource(Resource):
     @SymbolAnalysis_ns.marshal_with(combined_analysis_response_model)
     def get(self):
         """
-        واکشی پروفایل تحلیلی کامل (خام + پردازش‌شده) بر اساس *نام نماد*.
+        واکشی پروفایل تحلیلی کامل (خام + پردازش‌شده) بر اساس *نام نماد* (Query Params).
         """
         logger.info("🔍 [API] Received request for combined analysis profile...")
 
         try:
+            # ⭐ منطق خواندن از Query String با reqparse (همانند قبل و کارآمد)
             args = combined_analysis_parser.parse_args()
             symbol_names = args['symbols']
 
@@ -235,7 +219,6 @@ class CombinedAnalysisResource(Resource):
                 logger.warning("No symbol names provided.")
                 return {"status": "error", "SymbolAnalysis": []}, 400
 
-            # --- تمام منطق پیچیده به سرویس سپرده می‌شود ---
             results_data = get_analysis_profile_for_symbols(symbol_names)
             
             logger.info(f"✅ [API] Returning {len(results_data)} analysis profiles.")
@@ -248,105 +231,108 @@ class CombinedAnalysisResource(Resource):
 
 
 # =================================================================================
-# اندپوینت آنالیز همگانی یک سهم
+# اندپوینت تحلیل جامع (Comprehensive Analysis)
 # =================================================================================
 
 @SymbolAnalysis_ns.route('/comprehensive-analysis')
 class ComprehensiveAnalysisResource(Resource):
     
-    @SymbolAnalysis_ns.doc('run_comprehensive_market_analysis')
-    @SymbolAnalysis_ns.expect(comprehensive_analysis_parser)
+    @SymbolAnalysis_ns.doc('get_comprehensive_market_analysis')
+    @SymbolAnalysis_ns.expect(combined_analysis_parser)
     @SymbolAnalysis_ns.marshal_with(comprehensive_analysis_response_model)
-    def post(self):
-        """
-        اجرای تحلیل جامع تکنیکال-فاندامنتال-سنتیمنت برای نمادها
-        """
-        import time
+    def get(self):
+        """اجرای تحلیل جامع و لحظه‌ای بازار"""
+        logger.info("🔥 [API] Received request for comprehensive market analysis...")
         start_time = time.time()
         
-        logger.info("🎯 [API] Starting comprehensive market analysis...")
-        
         try:
-            args = comprehensive_analysis_parser.parse_args()
-            symbol_ids = args.get('symbols')
-            limit = args.get('limit')
-            analysis_types = args.get('analysis_types', ['technical', 'fundamental', 'sentiment'])
-            
-            logger.info(f"📊 تحلیل جامع برای: {len(symbol_ids) if symbol_ids else 'همه'} نماد | محدودیت: {limit} | انواع تحلیل: {analysis_types}")
-            
-            # اجرای تحلیل جامع
-            analysis_results = run_comprehensive_market_analysis(
-                db_session=db.session,
-                symbol_ids=symbol_ids,
-                limit=limit
-            )
-            
-            execution_time = time.time() - start_time
-            
-            # ساخت پاسخ
-            response = {
-                'status': 'success',
-                'analysis_type': 'comprehensive_technical_fundamental_sentiment',
-                'technical_analysis': analysis_results.get('technical_analysis', {}),
-                'fundamental_analysis': analysis_results.get('fundamental_analysis', {}),
-                'sentiment_analysis': analysis_results.get('sentiment_analysis', {}),
-                'market_overview': analysis_results.get('market_overview', {}),
-                'anomalies_detected': analysis_results.get('anomalies_detected', []),
-                'execution_time': round(execution_time, 2),
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            logger.info(f"✅ تحلیل جامع با موفقیت تکمیل شد. زمان اجرا: {execution_time:.2f} ثانیه")
-            return response, 200
-            
-        except Exception as e:
-            execution_time = time.time() - start_time
-            logger.error(f"❌ خطا در تحلیل جامع بازار: {e}\n{traceback.format_exc()}")
-            
-            return {
-                'status': 'error',
-                'analysis_type': 'comprehensive_technical_fundamental_sentiment',
-                'technical_analysis': {},
-                'fundamental_analysis': {},
-                'sentiment_analysis': {},
-                'market_overview': {},
-                'anomalies_detected': [],
-                'execution_time': round(execution_time, 2),
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'error_message': str(e)
-            }, 500
+            args = combined_analysis_parser.parse_args()
+            symbol_names = args.get('symbols', [])
 
-# 🔥 اندپوینت GET برای تحلیل جامع (اختیاری)
-@SymbolAnalysis_ns.route('/comprehensive-analysis/status')
-class ComprehensiveAnalysisStatusResource(Resource):
-    
-    @SymbolAnalysis_ns.doc('get_comprehensive_analysis_status')
-    def get(self):
-        """
-        دریافت وضعیت سرویس تحلیل جامع
-        """
-        return {
-            'status': 'active',
-            'service': 'Comprehensive Market Analysis',
-            'capabilities': [
-                'Technical Analysis (RSI, MACD, Bollinger Bands, etc.)',
-                'Fundamental Analysis (Valuation, Financial Health, Growth)',
-                'Market Sentiment Analysis',
-                'Anomaly Detection',
-                'Market Overview'
-            ],
-            'version': '1.0',
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-        }, 200
+            if not symbol_names:
+                logger.warning("No symbol names provided.")
+                return {
+                    "status": "error",
+                    "analysis_type": "real_time",
+                    "execution_time": 0.0,
+                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "market_overview": {},
+                    "global_anomalies": [],
+                    "symbol_results": {"error_message": "No symbols provided for analysis."}
+                }, 400
+
+            # 🚀 اجرای تحلیل اصلی
+            analysis_data = run_comprehensive_market_analysis(db.session, symbol_ids=symbol_names)
+
+            # 🧩 تابع پاک‌سازی بازگشتی
+            def sanitize_json(obj):
+                import numpy as np
+                if isinstance(obj, dict):
+                    return {k: sanitize_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [sanitize_json(v) for v in obj]
+                elif isinstance(obj, (np.bool_, bool)):
+                    return bool(obj)
+                elif obj is None or (isinstance(obj, float) and (obj != obj)):  # NaN check
+                    return None
+                elif isinstance(obj, (int, float, str)):
+                    return obj
+                else:
+                    try:
+                        # اگر نوع پیچیده بود و __dict__ دارد
+                        return sanitize_json(obj.__dict__)
+                    except Exception:
+                        return str(obj)
+
+            # پاک‌سازی کل خروجی Orchestrator
+            analysis_data = sanitize_json(analysis_data)
+
+            # 🧩 ساخت پاسخ نهایی
+            execution_time = time.time() - start_time
+            symbol_results = {
+                "technical": analysis_data.get('technical_analysis', {}),
+                "fundamental": analysis_data.get('fundamental_analysis', {}),
+                "sentiment": analysis_data.get('sentiment_analysis', {})
+            }
+
+            response = {
+                "status": "success" if 'error' not in analysis_data else "error",
+                "analysis_type": "Comprehensive & Real-Time",
+                "execution_time": round(execution_time, 3),
+                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+                "market_overview": analysis_data.get('market_overview', {}),
+                "global_anomalies": analysis_data.get('anomalies_detected', []),
+                "symbol_results": symbol_results
+            }
+
+            response = sanitize_json(response)  # دوباره تمیز برای اطمینان
+
+            if response['status'] == 'error':
+                logger.error(f"❌ Analysis error: {analysis_data.get('error', 'Unknown error')}")
+                return response, 500
+
+            logger.info(f"✅ [API] Comprehensive analysis completed in {execution_time:.3f}s.")
+            return response, 200
+
+        except Exception as e_outer:
+            logger.error(f"❌ Critical error in comprehensive-analysis endpoint: {e_outer}", exc_info=True)
+            return {
+                "status": "error",
+                "analysis_type": "real_time",
+                "execution_time": round(time.time() - start_time, 3),
+                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+                "market_overview": {},
+                "global_anomalies": [],
+                "symbol_results": {"error_message": f"Critical server error: {str(e_outer)}"}
+            }, 500
 
 
 
 
 # =================================================================================
-# اندپوینت کندل های پیشرفته
-# =================================================================================        
+# اندپوینت کندل های پیشرفته (بدون تغییر)
+# =================================================================================         
 
-# 🔥 اندپوینت پیشرفته برای کندل استیک‌های باارزش
 @SymbolAnalysis_ns.route('/candlestick-patterns/advanced')
 class AdvancedCandlestickPatternsResource(Resource):
     
@@ -355,13 +341,7 @@ class AdvancedCandlestickPatternsResource(Resource):
     @SymbolAnalysis_ns.marshal_with(candlestick_response_model)
     def get(self):
         """
-        دریافت لیست نمادهای باارزش دارای الگوهای کندل استیک
-        
-        این اندپوینت فقط نمادهایی را برمی‌گرداند که:
-        - حجم معاملات قابل توجهی دارند
-        - نقدشوندگی خوبی دارند  
-        - در روند مناسبی قرار دارند
-        - قدرت خرید سالمی دارند
+        دریافت لیست نمادهای باارزش دارای الگوهای کندل استیک با فیلترهای پیشرفته
         """
         logger.info("🎯 [API] دریافت درخواست برای کندل استیک‌های باارزش...")
         
@@ -400,8 +380,8 @@ class AdvancedCandlestickPatternsResource(Resource):
             
             # 🔧 اعمال فیلترهای پیشرفته
             
-            # فیلتر حذف صندوق‌های سرمایه گذاری - این رو اول از همه اعمال کنید
-            excluded_sectors = ['صندوق', 'اهرمی', 'سرمایه‌گذاری‌', 'سرمایه گذاری', 'سرمايه گذاريها']
+            # فیلتر حذف صندوق‌های سرمایه گذاری
+            excluded_sectors = ['صندوق', 'اهرمی', 'سرمایه‌گذاری‌', 'سرمایه گذاری', 'سرمايه گذاريها', 'ETF']
             for excluded_sector in excluded_sectors:
                 base_query = base_query.filter(
                     ~ComprehensiveSymbolData.group_name.ilike(f'%{excluded_sector}%')
@@ -410,29 +390,29 @@ class AdvancedCandlestickPatternsResource(Resource):
 
             # فیلتر حجم معاملات
             if min_volume_ratio > 1.0:
-                # محاسبه میانگین حجم 20 روزه (نیاز به subquery دارد)
                 from sqlalchemy import func
+                # استفاده از subquery برای محاسبه میانگین حجمی برای هر نماد 
                 avg_volume_subquery = db.session.query(
                     HistoricalData.symbol_id,
-                    func.avg(HistoricalData.volume).label('avg_volume_20d')
+                    func.avg(HistoricalData.volume).label('avg_volume_all_time')
                 ).group_by(HistoricalData.symbol_id).subquery()
                 
+                # به کوئری اصلی join می‌کنیم
                 base_query = base_query.join(
                     avg_volume_subquery,
                     CandlestickPatternDetection.symbol_id == avg_volume_subquery.c.symbol_id
                 ).filter(
-                    HistoricalData.volume >= avg_volume_subquery.c.avg_volume_20d * min_volume_ratio
+                    HistoricalData.volume >= avg_volume_subquery.c.avg_volume_all_time * min_volume_ratio
                 )
             
             # فیلتر ارزش معاملات
             if min_trade_value > 0:
                 base_query = base_query.filter(
-                    HistoricalData.value >= min_trade_value * 1e9  # تبدیل به ریال
+                    HistoricalData.value >= min_trade_value * 1e9
                 )
             
-            # فیلتر روند
+            # فیلتر روند (فرض بر وجود HistoricalData.sma_20)
             if trend_direction != 'any':
-                # استفاده از داده‌های تکنیکال برای تشخیص روند
                 if trend_direction == 'bullish':
                     base_query = base_query.filter(
                         HistoricalData.close > func.coalesce(HistoricalData.sma_20, HistoricalData.close)
@@ -476,7 +456,6 @@ class AdvancedCandlestickPatternsResource(Resource):
             for row in results:
                 # Unpack تمام 10 فیلد از کوئری
                 candlestick, symbol_name, company_name, group_name, close, volume, value, buy_i_volume, sell_i_volume, plp = row
-                
                 key = (candlestick.symbol_id, candlestick.pattern_name, candlestick.jdate)
                 if key not in unique_patterns:
                     unique_patterns[key] = row
@@ -517,13 +496,6 @@ class AdvancedCandlestickPatternsResource(Resource):
             
             unique_symbols = len(set([p['symbol_id'] for p in patterns_list]))
             
-            # 🔍 لاگ آمار الگوها برای دیباگ
-            doji_count = len([p for p in patterns_list if 'Doji' in p['pattern_name']])
-            engulfing_count = len([p for p in patterns_list if 'Engulfing' in p['pattern_name']])
-            other_count = len(patterns_list) - doji_count - engulfing_count
-            
-            logger.info(f"📊 آمار الگوها: دوجی: {doji_count}, پوشا: {engulfing_count}, سایر: {other_count}")
-            
             response = {
                 'status': 'success',
                 'count': len(patterns_list),
@@ -551,12 +523,13 @@ class AdvancedCandlestickPatternsResource(Resource):
                 'error_message': str(e)
             }, 500
     
+    # توابع کمکی (حفظ شدند)
     def _apply_pattern_type_filter(self, query, pattern_type):
         """اعمال فیلتر نوع الگو"""
         bullish_patterns = ['Hammer', 'Inverted_Hammer', 'Bullish_Engulfing', 'Piercing_Line', 
-                          'Morning_Star', 'Three_White_Soldiers', 'Bullish_Harami', 'Dragonfly_Doji']
+                            'Morning_Star', 'Three_White_Soldiers', 'Bullish_Harami', 'Dragonfly_Doji']
         bearish_patterns = ['Shooting_Star', 'Bearish_Engulfing', 'Evening_Star', 'Dark_Cloud_Cover',
-                          'Three_Black_Crows', 'Bearish_Harami', 'Gravestone_Doji']
+                            'Three_Black_Crows', 'Bearish_Harami', 'Gravestone_Doji']
         neutral_patterns = ['Doji', 'Spinning_Top']
         
         if pattern_type == 'bullish':
@@ -602,10 +575,7 @@ class AdvancedCandlestickPatternsResource(Resource):
         return 'neutral'
 
 
-
-
-
-# 🔥 اندپوینت برای دریافت آمار کندل استیک‌ها
+# 🔥 اندپوینت برای دریافت آمار کندل استیک‌ها (بدون تغییر)
 @SymbolAnalysis_ns.route('/candlestick-patterns/stats')
 class CandlestickPatternsStatsResource(Resource):
     
@@ -630,8 +600,11 @@ class CandlestickPatternsStatsResource(Resource):
             bearish_count = 0
             neutral_count = 0
             
+            # ⬅️ از یک نمونه موقت برای دسترسی به متد خصوصی تشخیص الگو استفاده می‌کنیم
+            detector = AdvancedCandlestickPatternsResource() 
+            
             for pattern in patterns_by_type:
-                pattern_type = CandlestickPatternsResource()._detect_pattern_type(pattern[0])
+                pattern_type = detector._detect_pattern_type(pattern[0]) 
                 if pattern_type == 'bullish':
                     bullish_count += 1
                 elif pattern_type == 'bearish':
