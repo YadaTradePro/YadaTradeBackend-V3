@@ -98,6 +98,9 @@ def calculate_atr(high, low, close, window=14):
 
 # --- مهندسی ویژگی ---
 def _perform_feature_engineering(df_symbol_hist, symbol_id_for_logging="N/A"):
+    # 💡 اصلاح 1: df_symbol_hist اکنون دارای ستون 'gregorian_date' است.
+    # این تابع را فقط بر اساس تاریخ نمایه می‌کنیم تا اندیکاتورها محاسبه شوند.
+    # شاخص تاریخ باید منحصر به فرد باشد تا در محاسبات اندیکاتور خطا رخ ندهد.
     df_processed = df_symbol_hist.sort_values(by='gregorian_date').set_index('gregorian_date').copy()
 
     # اندیکاتورها
@@ -159,7 +162,9 @@ def _perform_feature_engineering(df_symbol_hist, symbol_id_for_logging="N/A"):
         'zd4', 'qd4', 'pd4', 'zo4', 'qo4', 'po4',
         'zd5', 'qd5', 'pd5', 'zo5', 'qo5', 'po5'
     ]
-    features_df = df_processed[feature_columns].copy()
+    
+    # 💡 اصلاح 2: بازگرداندن شاخص 'gregorian_date' به ستون برای ادغام
+    features_df = df_processed[feature_columns].copy().reset_index()
     features_df.fillna(0, inplace=True)
     features_df.replace([np.inf, -np.inf], 0, inplace=True)
     return features_df
@@ -204,29 +209,60 @@ def train_model():
                 df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce')
 
         df_hist.dropna(subset=['close', 'volume', 'high', 'low', 'open'], inplace=True)
+        
+        # 💡 اصلاح کلیدی 3: ساخت شاخص چند سطحی از symbol_id و gregorian_date برای اطمینان از منحصر به فرد بودن
+        # این کار هر ردیف را به صورت منحصر به فرد با ترکیب نماد و تاریخ شناسایی می‌کند.
+        df_hist.set_index(['symbol_id', 'gregorian_date'], inplace=True)
+        # 📢 در صورت وجود رکوردهای کاملاً تکراری (در یک نماد و یک تاریخ)، تنها یکی از آن‌ها حفظ می‌شود
+        df_hist.drop_duplicates(inplace=True) 
 
         # مهندسی ویژگی
         all_features_df = pd.DataFrame()
-        for symbol_id in df_hist['symbol_id'].unique():
-            df_symbol = df_hist[df_hist['symbol_id'] == symbol_id].copy()
+        # 💡 اصلاح 4: دسترسی به symbol_id از طریق شاخص MultiIndex (رفع KeyError)
+        for symbol_id in df_hist.index.get_level_values('symbol_id').unique():
+            # 💡 اصلاح 5: انتخاب داده‌های نماد و برگرداندن شاخص‌ها به ستون (رفع خطای reindex)
+            # .loc[symbol_id] داده‌های یک نماد را استخراج می‌کند و .reset_index() symbol_id و gregorian_date 
+            # را به ستون‌های معمولی برمی‌گرداند.
+            df_symbol = df_hist.loc[symbol_id].copy().reset_index()
+            
             # اصلاح: بررسی تعداد کافی داده قبل از پردازش
             if len(df_symbol) < 60:
                 logger.warning(f"پرش از نماد {symbol_id}: داده کافی ({len(df_symbol)} روز) برای محاسبه ویژگی‌ها وجود ندارد.")
                 continue
+                
             features_df = _perform_feature_engineering(df_symbol, symbol_id)
             if features_df.empty:
                 continue
+                
+            # 💡 اصلاح 6: ادغام jdate و close_hist با استفاده از merge
+            # features_df از قبل شامل 'gregorian_date' است (از reset_index در تابع مهندسی ویژگی)
+            
+            # فقط ستون‌های مورد نیاز برای ادغام را از df_symbol انتخاب کنید
+            jdate_close_df = df_symbol[['gregorian_date', 'jdate', 'close']].copy()
+            jdate_close_df.rename(columns={'close': 'close_hist'}, inplace=True)
+            
+            # ادغام بر اساس gregorian_date
+            features_df = pd.merge(
+                features_df, 
+                jdate_close_df, 
+                on='gregorian_date', 
+                how='left'
+            )
+            
             features_df['symbol_id'] = symbol_id
-            features_df['jdate'] = df_symbol.set_index('gregorian_date').loc[features_df.index, 'jdate']
-            features_df['close_hist'] = df_symbol.set_index('gregorian_date').loc[features_df.index, 'close']
-            all_features_df = pd.concat([all_features_df, features_df], ignore_index=False)
+            
+            # 💡 اصلاح 7: استفاده از ignore_index=True برای جلوگیری از تداخل شاخص‌ها در concate نهایی
+            all_features_df = pd.concat([all_features_df, features_df], ignore_index=True)
 
         if all_features_df.empty:
             logger.error("داده‌ای برای آموزش باقی نمانده.")
             return
 
-        all_features_df.sort_values(by=['symbol_id', 'gregorian_date'], inplace=True)
-        all_features_df['future_close'] = all_features_df.groupby('symbol_id')['close_hist'].shift(-7)
+        # 💡 اصلاح 8: تنظیم شاخص نهایی بر اساس symbol_id و gregorian_date
+        all_features_df.set_index(['symbol_id', 'gregorian_date'], inplace=True)
+        all_features_df.sort_index(inplace=True) 
+
+        all_features_df['future_close'] = all_features_df.groupby(level='symbol_id')['close_hist'].shift(-7)
         all_features_df['percentage_change'] = ((all_features_df['future_close'] - all_features_df['close_hist']) / all_features_df['close_hist']) * 100
         
         # اصلاح: حذف ردیف‌های دارای NaN پس از مهندسی ویژگی و برچسب‌گذاری
@@ -255,14 +291,19 @@ def train_model():
         logger.info("توزیع کلاس‌ها در داده‌های آموزشی (پس از برچسب‌گذاری با کوانتایل):")
         logger.info(all_features_df['trend'].value_counts(normalize=True))
 
-        X = all_features_df.drop(columns=['symbol_id', 'jdate', 'close_hist', 'future_close', 'percentage_change', 'trend'])
+        # 💡 اصلاح 9: حذف سطح شاخص 'symbol_id' از X برای مدل‌سازی
+        X = all_features_df.drop(columns=['jdate', 'close_hist', 'future_close', 'percentage_change', 'trend'])
+        # X باید شامل 'gregorian_date' به عنوان بخشی از شاخص MultiIndex باشد
+        X = X.droplevel(level='symbol_id') 
         y = all_features_df['trend']
+        y.index = y.index.droplevel(level='symbol_id')
+
 
         # ترکیب X و y
-        # اصلاح: نام دیتافریم را به df_combined تغییر دادم تا با لاگ‌های قبلی مطابقت نداشته باشد و سردرگمی ایجاد نشود.
         df_combined = X.copy()
         df_combined["target"] = y
-        unique_dates = df_combined.index.unique().sort_values()
+        # 💡 اصلاح 10: unique_dates از شاخص فعلی X و y (که فقط 'gregorian_date' است) استخراج می‌شود.
+        unique_dates = df_combined.index.unique().sort_values() 
 
         initial_train_window_days = getattr(Config, "ML_INITIAL_TRAIN_DAYS", 252)
         test_window_days = getattr(Config, "ML_TEST_DAYS", 21)
@@ -347,7 +388,8 @@ def train_model():
 
         # ذخیره‌سازی
         joblib.dump(final_model, latest_model_path)
-        joblib.dump(X.columns.tolist(), latest_feature_names_path)
+        # 💡 اصلاح 11: ستون‌های X پس از droplevel دیگر شامل 'symbol_id' نیست.
+        joblib.dump(X.columns.tolist(), latest_feature_names_path) 
         joblib.dump(final_model.classes_.tolist(), latest_class_labels_path)
         joblib.dump(final_scaler, latest_scaler_path)
         logger.info("✅ مدل و فایل‌های جانبی ذخیره شدند.")
