@@ -134,7 +134,7 @@ def _get_day_type() -> str:
     day_name = j_today.strftime('%A') 
     if day_name in ('Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday'):
         return 'daily'
-    if day_name == 'Friday':
+    if day_name in ('Thursday', 'Friday'):
         return 'weekly'
     return 'no_analysis_day'
 
@@ -174,50 +174,134 @@ def _get_formatted_symbols_text(symbols: List[Any], is_weekly: bool) -> str:
 
 def _get_top_sectors_summary(db_session: db.session, analysis_jdate_str: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
-    اطلاعات صنایع برتر را برای یک تاریخ مشخص برمی‌گرداند.
+    اطلاعات صنایع برتر را برای تاریخ مشخص یا بازه‌ی آخر هفته برمی‌گرداند.
+    📅 اگر روز اجرای تحلیل در ایام هفته (شنبه تا چهارشنبه) باشد:
+        ➤ فقط داده همان روز بازگردانده می‌شود.
+    📆 اگر روز اجرا پنج‌شنبه یا جمعه باشد:
+        ➤ داده‌های تجمیعی از شنبه تا چهارشنبه همان هفته محاسبه می‌شود.
     """
-    logger.info(f"شروع بازیابی خلاصه صنایع برای تاریخ: {analysis_jdate_str}")
-    try:
-        # ✅ استفاده مستقیم از تاریخ تحلیل اصلی
-        top_sectors = DailySectorPerformance.query.filter_by(jdate=analysis_jdate_str).order_by(
-            DailySectorPerformance.rank.asc()
-        ).limit(limit).all()
-        
-        if not top_sectors:
-            logger.warning(f"❌ هیچ داده عملکرد صنعتی برای تاریخ {analysis_jdate_str} یافت نشد. لیست خالی برگردانده شد.")
-            return []
-            
-        json_sectors_list = []
-        for sector in top_sectors:
-            # ... (بقیه منطق تبدیل به JSON) ...
-            net_flow_billion = float(sector.net_money_flow) / 1e10 if sector.net_money_flow else 0
-            
-            sector_data = {
-                'sector_name': sector.sector_name,
-                'net_money_flow_billion': round(net_flow_billion, 2),
-                'flow_status': 'ورود' if net_flow_billion > 0 else ('خروج' if net_flow_billion < 0 else 'خنثی'),
-                'flow_value_text': f"{abs(net_flow_billion):.2f} م.تومان",
-            }
-            json_sectors_list.append(sector_data)
 
-        logger.info(f"✅ {len(json_sectors_list)} رکورد صنعت برای تاریخ {analysis_jdate_str} با موفقیت بازیابی شد.")
-        return json_sectors_list
-    
+    try:
+        day_type = _get_day_type()
+        logger.info(f"🧭 نوع روز فعلی برای خلاصه صنایع: {day_type}")
+
+        if day_type == 'daily':
+            # ----------------------------
+            # 🔹 حالت روزانه: فقط داده همان روز
+            # ----------------------------
+            top_sectors = (
+                DailySectorPerformance.query
+                .filter_by(jdate=analysis_jdate_str)
+                .order_by(DailySectorPerformance.rank.asc())
+                .limit(limit)
+                .all()
+            )
+
+            if not top_sectors:
+                logger.info(f"ℹ️ داده‌ای برای عملکرد صنایع در تاریخ {analysis_jdate_str} وجود ندارد (لیست خالی).")
+                return []
+
+            json_sectors_list = []
+            for sector in top_sectors:
+                net_flow_billion = float(sector.net_money_flow or 0) / 1e10
+                sector_data = {
+                    'sector_name': sector.sector_name,
+                    'net_money_flow_billion': round(net_flow_billion, 2),
+                    'flow_status': 'ورود' if net_flow_billion > 0 else ('خروج' if net_flow_billion < 0 else 'خنثی'),
+                    'flow_value_text': f"{abs(net_flow_billion):.2f} م.تومان",
+                }
+                json_sectors_list.append(sector_data)
+
+            logger.info(f"✅ {len(json_sectors_list)} رکورد صنعت برای تاریخ {analysis_jdate_str} بازیابی شد.")
+            return json_sectors_list
+
+        elif day_type in ('weekly', 'no_analysis_day'):
+            # ----------------------------
+            # 🔹 حالت هفتگی: جمع ۵ روز آخر هفته معاملاتی (شنبه تا چهارشنبه)
+            # ----------------------------
+
+            # پیدا کردن آخرین روز معاملاتی
+            last_trading_day = (
+                db_session.query(DailySectorPerformance.jdate)
+                .distinct()
+                .order_by(DailySectorPerformance.jdate.desc())
+                .first()
+            )
+
+            if not last_trading_day:
+                logger.warning("❌ هیچ تاریخ معاملاتی در جدول DailySectorPerformance یافت نشد.")
+                return []
+
+            last_jdate = last_trading_day[0]
+
+            # محاسبه شروع هفته (۴ روز قبل)
+            try:
+                jd = jdatetime.datetime.strptime(last_jdate, "%Y-%m-%d").date()
+            except Exception:
+                # پشتیبانی از فرمت YYYY/MM/DD
+                jd = jdatetime.datetime.strptime(last_jdate.replace('/', '-'), "%Y-%m-%d").date()
+
+            start_jdate = (jd - jdatetime.timedelta(days=4)).strftime("%Y-%m-%d")
+
+            logger.info(f"📅 محدوده هفتگی صنایع از {start_jdate} تا {last_jdate}")
+
+            # واکشی داده‌های بین شنبه تا چهارشنبه همان هفته
+            week_records = (
+                DailySectorPerformance.query
+                .filter(DailySectorPerformance.jdate >= start_jdate)
+                .filter(DailySectorPerformance.jdate <= last_jdate)
+                .all()
+            )
+
+            if not week_records:
+                logger.warning(f"⚠️ هیچ داده صنعتی بین {start_jdate} تا {last_jdate} یافت نشد.")
+                return []
+
+            # تجمیع پول صنایع
+            df_week = pd.DataFrame([{
+                'sector_name': r.sector_name,
+                'net_money_flow': float(r.net_money_flow or 0)
+            } for r in week_records])
+
+            df_agg = (
+                df_week.groupby('sector_name', as_index=False)
+                .agg({'net_money_flow': 'sum'})
+                .sort_values(by='net_money_flow', ascending=False)
+                .head(limit)
+            )
+
+            result = []
+            for _, row in df_agg.iterrows():
+                net_bil = row['net_money_flow'] / 1e10
+                result.append({
+                    'sector_name': row['sector_name'],
+                    'net_money_flow_billion': round(net_bil, 2),
+                    'flow_status': 'ورود' if net_bil > 0 else ('خروج' if net_bil < 0 else 'خنثی'),
+                    'flow_value_text': f"{abs(net_bil):.2f} م.تومان",
+                })
+
+            logger.info(f"✅ خلاصه هفتگی {len(result)} صنعت برتر از {start_jdate} تا {last_jdate} محاسبه شد.")
+            return result
+
+        else:
+            logger.warning("⚠️ نوع روز نامشخص بود، لیست خالی بازگردانده شد.")
+            return []
+
     except Exception as e:
-        logger.error(f"❌ خطا در تولید خلاصه صنایع برتر برای تاریخ {analysis_jdate_str}: {e}")
+        logger.error(f"❌ خطا در تولید خلاصه صنایع: {e}", exc_info=True)
         return []
 
 #تابع نگاشت (Mapping)
-def _map_watchlist_result_to_dict(result_obj: 'WeeklyWatchlistResult') -> Dict[str, Any]:
+def _map_watchlist_result_to_dict(result_obj: 'SignalsPerformance') -> Dict[str, Any]:
     """
-    یک آبجکت ORM WeeklyWatchlistResult را به دیکشنری استاندارد تبدیل می‌کند.
+    یک آبجکت ORM (احتمالاً SignalsPerformance) را به دیکشنری استاندارد تبدیل می‌کند.
     """
-    # توجه: daily_change_percent یک فیلد موقتی است که با setattr اضافه شده است.
+    # توجه: daily_change_percent یک فیلد موقتی است که با setattr اضافه شده است (برای گزارش روزانه).
     daily_change = getattr(result_obj, 'daily_change_percent', None)
     
     # 💡 تمام ستون‌های لازم را به صورت صریح از آبجکت استخراج می‌کنیم
     return {
-        'signal_unique_id': result_obj.signal_unique_id,
+        'signal_unique_id': result_obj.signal_id, # 🚨 اصلاح شده: از signal_id استفاده می‌کند
         'symbol_id': result_obj.symbol_id,
         'symbol_name': result_obj.symbol_name,
         'entry_price': float(result_obj.entry_price) if result_obj.entry_price is not None else None,
@@ -229,7 +313,8 @@ def _map_watchlist_result_to_dict(result_obj: 'WeeklyWatchlistResult') -> Dict[s
         'reason': result_obj.reason,
         'exit_price': float(result_obj.exit_price) if result_obj.exit_price is not None else None,
         'jexit_date': result_obj.jexit_date,
-        'profit_loss_percentage': float(result_obj.profit_loss_percentage) if result_obj.profit_loss_percentage is not None else None,
+        # 🚨 اصلاح شده: از profit_loss_percent استفاده می‌کند
+        'profit_loss_percentage': float(result_obj.profit_loss_percent) if result_obj.profit_loss_percent is not None else None,
         'probability_percent': float(result_obj.probability_percent) if result_obj.probability_percent is not None else None,
     }
 
@@ -495,7 +580,7 @@ def _generate_daily_summary() -> Dict[str, Any]:
         
         # 7. خلاصه صنایع برتر
         # 💡 اصلاح: ارسال analysis_date_jdate_str به تابع تحلیل صنایع
-        sector_summary_list = _get_top_sectors_summary(db.session, analysis_date_jdate_str, limit=3) 
+        sector_summary_list = _get_top_sectors_summary(db.session, analysis_date_jdate_str, limit=5) 
         
         # 8. تبدیل لیست آبجکت‌های ORM واچ‌لیست به لیست دیکشنری‌ها 
         # 🚨 رفع باگ انتقال داده: اطمینان از انتقال فیلد موقتی
@@ -537,11 +622,17 @@ def _generate_daily_summary() -> Dict[str, Any]:
 def _generate_weekly_summary() -> Dict[str, Any]: # 💡 تغییر نوع بازگشتی
     logger.info("شروع فرآیند تولید تحلیل هفتگی بازار...")
     try:
+        # 0. تعریف تاریخ گزارش نهایی (برای فیلد 'jdate' در خروجی)
+        last_trading_day_record = db.session.query(HistoricalData.jdate).distinct().order_by(HistoricalData.jdate.desc()).first()
+        # 🚨 تعریف متغیر: analysis_date_jdate_str
+        analysis_date_jdate_str = last_trading_day_record[0] if last_trading_day_record else jdatetime.date.today().strftime('%Y-%m-%d')
+
         # 1. پیدا کردن ۵ روز معاملاتی آخر برای تحلیل هفتگی
         last_5_days_query = db.session.query(HistoricalData.jdate).distinct().order_by(HistoricalData.jdate.desc()).limit(5)
         last_5_days = [d[0] for d in last_5_days_query.all()]
         if not last_5_days:
-            return {"status": "error", "message": "❌ داده کافی برای تحلیل هفتگی وجود ندارد."}
+            # 💡 در صورت نبود داده تاریخی، بازگشت موفق با تاریخ امروز
+            return {"status": "info", "jdate": analysis_date_jdate_str, "message": "❌ داده کافی برای تحلیل هفتگی وجود ندارد. گزارش خالی منتشر می‌شود."}
 
         start_date_j = min(last_5_days)
         
@@ -551,41 +642,141 @@ def _generate_weekly_summary() -> Dict[str, Any]: # 💡 تغییر نوع با�
         ).order_by(AggregatedPerformance.created_at.desc()).first()
         indices_for_template = {'win_rate': float(getattr(aggregated_data, 'win_rate', 0))}
         
-        # 3. محاسبه جریان پول هفتگی
+        # 3. محاسبه جریان پول هفتگی و **سنتیمنت تجمیعی**
         historical_rows = HistoricalData.query.filter(HistoricalData.jdate.in_(last_5_days)).all()
         # 💡 استفاده از تابع کمکی برای ساخت DataFrame امن‌تر است، اما فرض می‌کنیم DataFrame موجود است
         df = pd.DataFrame([row.__dict__ for row in historical_rows])
         
+        # 💡 آماده‌سازی ستون‌ها در صورت خالی بودن
+        for col in ['buy_i_volume', 'sell_i_volume', 'buy_count_i', 'sell_count_i', 'plp', 'value']:
+            if col not in df.columns:
+                df[col] = 0
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+        
         total_net_real_money_flow = 0
+        
+        # 🚨 بلوک جدید: محاسبه سنتیمنت تجمیعی هفتگی
+        sentiment = {
+            'total_index': {'value': None, 'status': None, 'weekly_change_percent': 0.0},
+            'equal_weighted_index': {'value': None, 'status': None, 'weekly_change_percent': 0.0},
+            'trade_value': {'retail': 0.0},
+            'money_flow': {'net_value_billion_toman': 0.0, 'status_text': 'فاقد اطلاعات'},
+            'per_capita': {'buy': 0.0, 'sell': 0.0, 'status_text': 'فاقد اطلاعات'},
+            'market_breadth': {'positive_symbols': 0, 'negative_symbols': 0}
+        }
+        
         if not df.empty:
             price_col = _choose_price_col(df)
-            for col in ['buy_i_volume', 'sell_i_volume']:
-                if col not in df.columns:
-                    df[col] = 0
+            
+            # --- الف. جریان پول هفتگی ---
             df['net_real_value_flow'] = (df['buy_i_volume'].fillna(0) - df['sell_i_volume'].fillna(0)) * df[price_col].fillna(0)
             total_net_real_money_flow = float(df['net_real_value_flow'].sum())
-        
-        smart_money_text = f"شاهد {'ورود' if total_net_real_money_flow > 0 else 'خروج'} پول حقیقی به ارزش تقریبی **{abs(total_net_real_money_flow) / 1e10:.2f}** میلیارد تومان بودیم"
+            
+            smart_money_text = f"شاهد {'ورود' if total_net_real_money_flow > 0 else 'خروج'} پول حقیقی به ارزش تقریبی **{abs(total_net_real_money_flow) / 1e10:.2f}** میلیارد تومان بودیم"
+            sentiment['money_flow']['net_value_billion_toman'] = total_net_real_money_flow / 1e10
+            sentiment['money_flow']['status_text'] = smart_money_text
 
-        # 4. بازیابی نتایج واچ‌لیست (نمادهایی که ورود آنها در ۵ روز اخیر بوده است)
-        weekly_watchlist_records = WeeklyWatchlistResult.query.filter(WeeklyWatchlistResult.jentry_date >= start_date_j).all()
+            # --- ب. ارزش معاملات خرد هفتگی ---
+            # جمع کل ارزش معاملات برای ۵ روز
+            sentiment['trade_value']['retail'] = float(df['value'].sum())
+            
+            # --- ج. سرانه خرید و فروش هفتگی ---
+            total_buy_value_i = (df['buy_i_volume'] * df[price_col]).sum()
+            total_sell_value_i = (df['sell_i_volume'] * df[price_col]).sum()
+            total_buyers_i = df['buy_count_i'].sum()
+            total_sellers_i = df['sell_count_i'].sum()
+            
+            if total_buyers_i > 0 and total_sellers_i > 0:
+                # سرانه خرید و فروش تجمیعی (به میلیون تومان)
+                per_capita_buy = (total_buy_value_i / total_buyers_i / 1e7)
+                per_capita_sell = (total_sell_value_i / total_sellers_i / 1e7)
+                
+                per_capita_status = "قدرت خریداران و فروشندگان متعادل بود"
+                if per_capita_buy > per_capita_sell * 1.2:
+                    per_capita_status = "قدرت خریداران بیشتر بود"
+                elif per_capita_sell > per_capita_buy * 1.2:
+                    per_capita_status = "قدرت فروشندگان بیشتر بود"
+                    
+                sentiment['per_capita'] = {
+                    'buy': float(per_capita_buy), 
+                    'sell': float(per_capita_sell), 
+                    'status_text': per_capita_status,
+                }
+            
+            # --- د. وضعیت کلی نمادها (مثبت/منفی) ---
+            positive_symbols_count = len(df[df['plp'] > 0])
+            negative_symbols_count = len(df[df['plp'] < 0])
+
+            sentiment['market_breadth'] = {
+                'positive_symbols': int(positive_symbols_count), 
+                'negative_symbols': int(negative_symbols_count), 
+            }
+        
+        # --- ه. عملکرد هفتگی شاخص‌ها ---
+        last_index_data_jdate = analysis_date_jdate_str # آخرین روز معاملاتی هفته
+        first_index_data_jdate = last_5_days[-1] # اولین روز معاملاتی هفته (قدیمی‌ترین تاریخ در لیست)
+        
+        last_indices = _get_daily_indices(last_index_data_jdate)
+        first_indices = _get_daily_indices(first_index_data_jdate)
+        
+        # 💡 تابع کمکی برای تبدیل ایمن به float
+        def safe_float_convert(value):
+            if isinstance(value, (int, float)):
+                return value
+            if isinstance(value, str) and value.upper() in ('N/A', 'NONE', 'NULL'):
+                return 0.0
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return 0.0
+        
+        total_index_start = safe_float_convert(first_indices.get('Total_Index', {}).get('value'))
+        total_index_end = safe_float_convert(last_indices.get('Total_Index', {}).get('value'))
+        equal_index_start = safe_float_convert(first_indices.get('Equal_Weighted_Index', {}).get('value'))
+        equal_index_end = safe_float_convert(last_indices.get('Equal_Weighted_Index', {}).get('value'))
+        
+        def calculate_weekly_change(start, end):
+            if start > 0:
+                return round(((end - start) / start) * 100, 2)
+            return 0.0
+            
+        total_weekly_change = calculate_weekly_change(total_index_start, total_index_end)
+        equal_weekly_change = calculate_weekly_change(equal_index_start, equal_index_end)
+        
+        def get_status(change):
+            return 'صعودی' if change > 0 else ('نزولی' if change < 0 else 'بدون تغییر')
+
+        # پر کردن بخش شاخص‌ها در sentiment
+        sentiment['total_index'] = {
+            'value': total_index_end, 
+            'status': get_status(total_weekly_change),
+            'weekly_change_percent': total_weekly_change
+        }
+        sentiment['equal_weighted_index'] = {
+            'value': equal_index_end,
+            'status': get_status(equal_weekly_change),
+            'weekly_change_percent': equal_weekly_change
+        }
+        
+        # 4. بازیابی نتایج سهم‌ها (نمادهایی که ورود آنها در ۵ روز اخیر بوده است)
+        # 🚨 اصلاح برای استفاده از SignalsPerformance: نمادهایی که در بازه هفتگی وارد شده‌اند
+        weekly_signal_records = SignalsPerformance.query.filter(
+            SignalsPerformance.jentry_date >= start_date_j
+        ).all()
         
         # 5. خلاصه صنایع برتر (خروجی JSON List)
-        # 💡 نکته: برای خلاصه هفتگی، تاریخ مشخصی ارسال نمی‌شود. آخرین تاریخ موجود استفاده می‌شود.
-        # بهتر است آخرین تاریخ معاملاتی را پیدا کنیم.
-        last_trading_day = db.session.query(HistoricalData.jdate).distinct().order_by(HistoricalData.jdate.desc()).first()
-        analysis_date_jdate_str = last_trading_day[0] if last_trading_day else jdatetime.date.today().strftime('%Y-%m-%d')
-        
-        sector_summary_list = _get_top_sectors_summary(db.session, analysis_date_jdate_str, limit=3) # 💡 ارسال آخرین تاریخ تحلیل
+        sector_summary_list = _get_top_sectors_summary(db.session, analysis_date_jdate_str, limit=5) 
         
         # 6. ایجاد خروجی نهایی
         data_for_template = {
             'jdate': analysis_date_jdate_str,
             'indices_data': indices_for_template,
-            'smart_money_flow_text': smart_money_text,
-            'sector_summary': sector_summary_list, # 💡 استفاده از لیست دیکشنری‌ها
-            'all_symbols': [_map_watchlist_result_to_dict(r) for r in weekly_watchlist_records],
-            'symbols_text': _get_formatted_symbols_text(weekly_watchlist_records, is_weekly=True),
+            'smart_money_flow_text': smart_money_text, 
+            'sector_summary': sector_summary_list, 
+            # 🚨 اصلاح: استفاده از لیست رکوردهای SignalsPerformance
+            'all_symbols': [_map_watchlist_result_to_dict(r) for r in weekly_signal_records],
+            'symbols_text': _get_formatted_symbols_text(weekly_signal_records, is_weekly=True),
+            'sentiment': sentiment, 
             'status': 'success'
         }
         
@@ -594,7 +785,7 @@ def _generate_weekly_summary() -> Dict[str, Any]: # 💡 تغییر نوع با�
     except Exception as e:
         logger.error(f"❌ خطای ناشناخته در تولید تحلیل هفتگی: {e}", exc_info=True)
         # 💡 بازگرداندن دیکشنری خطا
-        return {"status": "error", "message": "❌ متأسفانه به دلیل خطای فنی، امکان تولید تحلیل هفتگی وجود ندارد."}
+        return {"status": "error", "jdate": jdatetime.date.today().strftime('%Y-%m-%d'), "message": "❌ متأسفانه به دلیل خطای فنی، امکان تولید تحلیل هفتگی وجود ندارد."}
 
 # -----------------------------------------------------------------------------
 # تابع اصلی سرویس
