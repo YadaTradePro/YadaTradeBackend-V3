@@ -29,7 +29,6 @@ from joblib import Parallel, delayed
 from services.index_data_fetcher import get_market_indices
 
 # 💡 G-CleanUp: 
-ایمپورت ابزارهای لازم
 from services.technical_analysis_utils import (
     get_today_jdate_str, normalize_value, calculate_rsi, 
     calculate_macd, calculate_sma, calculate_bollinger_bands, 
@@ -51,120 +50,120 @@ FILTER_WEIGHTS = {
     # --- High-Impact Leading & Breakout Signals ---
     "Power_Thrust_Signal": {
         "weight": 5,
-     "description": "سیگنال قدرت: ترکیبی از حجم معاملات انفجاری، ورود پول هوشمند سنگین در یک روز مثبت (نادیده گرفتن صف خرید/فروش)."
-},
+        "description": "سیگنال قدرت: ترکیبی از حجم معاملات انفجاری، ورود پول هوشمند سنگین در یک روز مثبت (نادیده گرفتن صف خرید/فروش)."
+    },
     "RSI_Positive_Divergence": {
         "weight": 5,
         "description": "واگرایی مثبت در RSI، یک سیگنال پیشرو قوی برای احتمال بازگشت روند نزولی به صعودی."
-},
+    },
     "Resistance_Broken": {
         "weight": 5,
         "description": "شکست یک سطح مقاومت کلیدی، نشانه‌ای از قدرت خریداران و پتانسیل شروع یک حرکت صعودی جدید."
-},
+    },
     "Static_Resistance_Broken": {
         "weight": 5,
         "description": "شکست یک مقاومت مهم استاتیک (کلاسیک)، سیگنالی بسیار معتبر برای ادامه رشد."
-},
+    },
     "Squeeze_Momentum_Fired_Long": {
         "weight": 4,
         "description": "اندیکاتور Squeeze Momentum سیگنال خرید (خروج از فشردگی) صادر کرده است که نشان‌دهنده احتمال یک حرکت انفجاری است."
-},
+    },
     "Stochastic_Bullish_Cross_Oversold": {
         "weight": 4,
         "description": "تقاطع صعودی در اندیکاتور استوکاستیک در ناحیه اشباع فروش، یک سیگنال خرید کلاسیک و معتبر."
-},
+    },
     "Consolidation_Breakout_Candidate": {
         "weight": 3,
         "description": "سهم در فاز تراکم و نوسان کم قرار دارد و آماده یک حرکت قوی (شکست) است."
-},
+    },
     "Near_Static_Support": {
         "weight": 3,
         "description": "قیمت در نزدیکی یک سطح حمایتی استاتیک معتبر قرار دارد که ریسک به ریوارد مناسبی برای ورود فراهم می‌کند."
-},
+    },
     "Bollinger_Lower_Band_Touch": {
         "weight": 1,
         "description": "قیمت به باند پایین بولینگر برخورد کرده است که می‌تواند نشانه بازگشت کوتاه‌مدت قیمت باشد."
-},
+    },
 
     # --- Trend Confirmation & Strength Signals ---
     "IsInLeadingSector": {
         "weight": 4,
         "description": "سهم متعلق به یکی از صنایع پیشرو و مورد توجه بازار است که شانس موفقیت را افزایش می‌دهد."
-},
+    },
     "Strong_Uptrend_Confirmed": {
         "weight": 3,
         "description": "تایید روند صعودی قوی: SMA_20 > SMA_50 و قیمت بالاتر از SMA_20 است."
-},
+    },
     "Buy_The_Dip_SMA50": {
         "weight": 3,
         "description": "پاداش پولبک: قیمت در یک روند صعودی، به SMA_50 پولبک زده (در محدوده 0% تا 3% بالای آن)."
-},
+    },
     "Positive_Real_Money_Flow_Trend_10D": {
         "weight": 3,
         "description": "برآیند ورود پول هوشمند (حقیقی) در ۱۰ روز گذشته مثبت بوده است."
-},
+    },
     "Heavy_Individual_Buy_Pressure": {
         "weight": 3,
         "description": "سرانه خرید حقیقی‌ها در روز آخر به طور قابل توجهی بالاتر از سرانه فروش بوده است (ورود پول سنگین)."
-},
+    },
     "MACD_Bullish_Cross_Confirmed": {
         "weight": 2,
         "description": "خط MACD خط سیگنال خود را به سمت بالا قطع کرده که تاییدی بر شروع روند صعودی است."
-},
+    },
     "HalfTrend_Buy_Signal": {
         "weight": 2,
         "description": "اندیکاتور HalfTrend سیگنال خرید صادر کرده است."
-},
+    },
     "High_Volume_On_Up_Day": {
         "weight": 2,
         "description": "حجم معاملات در یک روز مثبت به طور معناداری افزایش یافته که نشان از حمایت قوی از رشد قیمت دارد (نادیده گرفتن صف)."
-},
+    },
     "Volume_MA_Is_Rising": { # 💡 G-Volume: بهبود یافته
         "weight": 2,
         "description": "روند میانگین حجم: شیب (Slope) میانگین حجم معاملات (20 روزه) صعودی است."
-},
+    },
 
     # --- 💡 G-Fundamental: بازگرداندن فیلتر ساده فاندامنتال ---
     "Reasonable_PE": {
         "weight": 1, 
         "description": "نسبت P/E سهم کمتر از 15 است و سهم حباب قیمتی ندارد."
-},
+    },
     
     # --- ML Prediction Filter ---
     "ML_Predicts_Uptrend": {
         "weight": 2,
         "description": "مدل یادگیری ماشین، احتمال بالایی برای یک روند صعودی پیش‌بینی کرده است."
-},
+    },
 
     # --- Penalties & Negative Scores (Crucial for avoiding peaks) ---
     "Price_Below_SMA200": { # 💡 G-Trend: فیلتر جدید روند بلندمدت
         "weight": -5,
         "description": "جریمه روند بلندمدت: قیمت پایین‌تر از میانگین متحرک ۲۰۰ روزه است."
-},
+    },
     "Strong_Downtrend_Confirmed": {
         "weight": -4,
         "description": "جریمه روند نزولی: SMA_20 پایین‌تر از SMA_50 قرار دارد."
-},
+    },
     "MACD_Negative_Divergence": {
         "weight": -4,
         "description": "جریمه واگرایی منفی: قیمت سقف جدید زده اما MACD سقف پایین‌تری ثبت کرده (نشانه ضعف شدید روند)."
-},
+    },
     "RSI_Is_Overbought": {
         "weight": -4,
         "description": "جریمه اشباع خرید: RSI در ناحیه اشباع خرید قرار دارد که ریسک اصلاح قیمت را افزایش می‌دهد."
-},
+    },
     "Price_Too_Stretched_From_SMA50": {
         "weight": -3,
         "description": "جریمه فاصله زیاد: قیمت فاصله زیادی از میانگین متحرک ۵۰ روزه گرفته که احتمال بازگشت به میانگین را بالا می‌برد."
-},
+    },
     "Negative_Real_Money_Flow_Trend_10D": {
         "weight": -2,
         "description": "جریمه خروج پول: برآیند ورود پول هوشمند در ۱۰ روز گذشته منفی بوده است (خروج پول)."
-},
+    },
     "Signal_Against_Market_Trend": {
         "weight": -2,
         "description": "جریمه خلاف جهت بازار: سیگنال صعودی (مثل MACD Cross) در یک بازار خرسی صادر شده است."
-}
+    }
 }
 
 
@@ -180,7 +179,7 @@ def _get_close_series_from_hist_df(hist_df):
     for col in ['close_price', 'close', 'final']:
         if col in hist_df.columns:
             ser = pd.to_numeric(hist_df[col], errors='coerce').dropna()
-        if not ser.empty:
+            if not ser.empty:
                 return ser
     return pd.Series(dtype=float)
 
@@ -193,8 +192,9 @@ def _get_market_sentiment() -> str:
     Uses data from DailyIndexData table.
     Returns: 'Bullish', 'Neutral', or 'Bearish'.
     """
+    
     try:
-    # Get last 3 distinct jdates
+        # Get last 3 distinct jdates
         last_jdates_query = db.session.query(DailyIndexData.jdate).distinct().order_by(DailyIndexData.jdate.desc()).limit(3).all()
         if not last_jdates_query:
             logger.warning("No index data available, defaulting to Neutral")
@@ -204,7 +204,8 @@ def _get_market_sentiment() -> str:
 
         # 💡 G-Sentiment: افزودن 'TEDPIX' به لیست بررسی
         index_types_to_check = ['Total_Index', 'Equal_Weighted_Index', 'TEDPIX']
-      index_data = db.session.query(DailyIndexData).filter(
+        
+        index_data = db.session.query(DailyIndexData).filter(
             DailyIndexData.jdate.in_(last_jdates),
             DailyIndexData.index_type.in_(index_types_to_check)
         ).all()
@@ -213,15 +214,15 @@ def _get_market_sentiment() -> str:
             logger.warning(f"Insufficient index data for types {index_types_to_check}, defaulting to Neutral")
             return "Neutral"
 
-        # 
-Group by index_type
+        # Group by index_type
         # 💡 G-Sentiment: استفاده از 'Total_Index' یا 'TEDPIX' به عنوان شاخص کل
         total_changes = [d.percent_change for d in index_data if d.index_type == 'Total_Index' or d.index_type == 'TEDPIX']
         equal_changes = [d.percent_change for d in index_data if d.index_type == 'Equal_Weighted_Index']
 
+        # 💡 FIX: Indentation error corrected
         if len(total_changes) < 1 or len(equal_changes) < 1:
             logger.warning("Missing data for one index type (Total or Equal), defaulting to Neutral")
-           return "Neutral"
+            return "Neutral"
 
         avg_total = np.mean(total_changes)
         avg_equal = np.mean(equal_changes)
@@ -231,14 +232,16 @@ Group by index_type
         if avg_total > 0.3 and avg_equal > 0.3:
             logger.info(f"Market Sentiment: Bullish (Total: {avg_total:.2f}%, Equal: {avg_equal:.2f}%)")
             return "Bullish"
-    elif avg_total < -0.3 and avg_equal < -0.3:
+        
+        elif avg_total < -0.3 and avg_equal < -0.3:
             logger.info(f"Market Sentiment: Bearish (Total: {avg_total:.2f}%, Equal: {avg_equal:.2f}%)")
-            # 💡 FIX: Indent Error (خط ۱۶۸)
             return "Bearish"
         else:
             logger.info(f"Market Sentiment: Neutral (Total: {avg_total:.2f}%, Equal: {avg_equal:.2f}%)")
             return "Neutral"
-   except Exception as e:
+            
+    # 💡 FIX: Indentation error corrected (moved to be aligned with try)
+    except Exception as e:
         logger.error(f"Error fetching market sentiment from DB: {e}, defaulting to Neutral")
         return "Neutral"
 
@@ -247,8 +250,8 @@ Group by index_type
 def _check_market_condition_filters(hist_df, tech_df):
     """
     Checks for individual stock conditions like overbought state 
-or consolidation.
-"""
+    or consolidation.
+    """ 
     satisfied_filters, reason_parts = [], {"market_condition": []}
     if not is_data_sufficient(tech_df, 1) or not is_data_sufficient(hist_df, MIN_REQUIRED_HISTORY_DAYS):
         return satisfied_filters, reason_parts
@@ -262,7 +265,7 @@ or consolidation.
 
     # --- Check 1: RSI Overbought Condition (Penalize only if weak) ---
     if hasattr(last_tech, 'RSI') and last_tech.RSI is not None and last_tech.RSI > 70:
-       is_negative_divergence = (
+        is_negative_divergence = (
             hasattr(last_tech, 'RSI_Divergence') and last_tech.RSI_Divergence == "Negative"
         )
         historical_volume_series = hist_df.tail(10)['volume']
@@ -270,14 +273,14 @@ or consolidation.
         is_high_volume = last_hist['volume'] > average_volume * 1.5 if average_volume > 0 else False
 
         if is_negative_divergence or not is_high_volume:
-           satisfied_filters.append("RSI_Is_Overbought")
+            satisfied_filters.append("RSI_Is_Overbought")
             reason_parts["market_condition"].append(
                 f"RSI ({last_tech.RSI:.2f}) overbought with weakness."
             )
         else:
             reason_parts["market_condition"].append(
                 f"RSI ({last_tech.RSI:.2f}) overbought but supported by strong volume (no penalty)."
-    )
+            )
 
     # --- Check 2 & 3: Price Stretch (Penalize) OR Buy The Dip (Reward) ---
     sma50 = _get_attr_safe(last_tech, 'SMA_50')
@@ -294,9 +297,8 @@ or consolidation.
                 f"Price is overextended ({stretch_percent:.1f}%) from SMA50."
             )
         
-        
-        # 💡 G-2: پاداش پولبک (شرط جدید)
-      elif is_uptrend and 0 <= stretch_percent <= 3:
+        # 💡 G-2: پاداش پولبک (شرط 
+        elif is_uptrend and 0 <= stretch_percent <= 3:
             satisfied_filters.append("Buy_The_Dip_SMA50")
             reason_parts["market_condition"].append(
                 f"Pullback signal: Price is near SMA50 ({stretch_percent:.1f}%) in an uptrend."
@@ -312,7 +314,7 @@ or consolidation.
             if recent_atr_avg < (historical_atr_avg * 0.7):
                 satisfied_filters.append("Consolidation_Breakout_Candidate")
                 reason_parts["market_condition"].append(
-                "Stock is in a low-volatility consolidation phase."
+                    "Stock is in a low-volatility consolidation phase."
                 )
 
     return satisfied_filters, reason_parts
@@ -321,7 +323,7 @@ or consolidation.
 def is_data_sufficient(data_df, min_len):
     """
     Checks if the provided DataFrame is not empty and has at least min_len records.
-"""
+    """
     if data_df is None or data_df.empty:
         return False
     return len(data_df) >= min_len
@@ -329,7 +331,7 @@ def is_data_sufficient(data_df, min_len):
 def convert_jalali_to_gregorian_timestamp(jdate_str):
     """
     Converts a Jalali date string (YYYY-MM-DD) to a pandas Timestamp (Gregorian).
-"""
+    """
     if pd.notna(jdate_str) and isinstance(jdate_str, str):
         try:
             jy, jm, jd = map(int, jdate_str.split('-'))
@@ -341,7 +343,7 @@ def convert_jalali_to_gregorian_timestamp(jdate_str):
 
 # Helper function to safely get a value
 def _get_attr_safe(rec, attr, default=None):
-   val = getattr(rec, attr, default)
+    val = getattr(rec, attr, default)
     if isinstance(val, (pd.Series, pd.DataFrame)):
         # 💡 FIX: (Bug) باید آخرین مقدار (iloc[-1]) برگردانده شود، نه اولین (iloc[0])
         return val.iloc[-1] if not val.empty else default
@@ -363,8 +365,10 @@ def _find_divergence(price_series: pd.Series, indicator_series: pd.Series, lookb
     
     # اطمینان از هم‌راستایی ایندکس‌ها پس از حذف NA
     common_index = price_series.index.intersection(indicator_series.index)
+    
+    # 💡 FIX: Indentation error corrected
     if len(common_index) < lookback:
-         return False # داده مشترک کافی وجود ندارد
+        return False # داده مشترک کافی وجود ندارد
          
     price_series = price_series.loc[common_index]
     indicator_series = indicator_series.loc[common_index]
@@ -384,35 +388,35 @@ def _find_divergence(price_series: pd.Series, indicator_series: pd.Series, lookb
     try:
         if check_type == 'positive_rsi':
             # RD+: قیمت کف پایین‌تر می‌سازد، اندیکاتور کف بالاتر می‌سازد.
-            min_price_idx = lookback_prices.idxmin()
+            min_price_idx = lookback_prices.idxmin() # Fix: Indent
             min_price_val = lookback_prices.loc[min_price_idx]
             indicator_at_min_price = lookback_indicators.loc[min_price_idx]
 
             if pd.isna(min_price_val) or pd.isna(indicator_at_min_price) or pd.isna(last_price) or pd.isna(last_indicator):
                 return False
 
-            # ۱. قیمت کف پایین‌تر زده
-            price_makes_lower_low = last_price < min_price_val
-            # ۲. اندیکاتور کف بالاتر زده
-            indicator_makes_higher_low = last_indicator > indicator_at_min_price
-            # ۳. سیگنال در ناحیه کف (مثلاً RSI < 50) معتبرتر است
-            is_at_bottom = last_indicator < 50
+            # ۱.
+            price_makes_lower_low = last_price < min_price_val # Fix: Indent
+            # ۲.
+            indicator_makes_higher_low = last_indicator > indicator_at_min_price # Fix: Indent
+            # ۳.
+            is_at_bottom = last_indicator < 50 # Fix: Indent
             
             return price_makes_lower_low and indicator_makes_higher_low and is_at_bottom
 
         elif check_type == 'negative':
             # RD-: قیمت سقف بالاتر می‌سازد، اندیکاتور سقف پایین‌تر می‌سازد.
-            max_price_idx = lookback_prices.idxmax()
+            max_price_idx = lookback_prices.idxmax() # Fix: Indent
             max_price_val = lookback_prices.loc[max_price_idx]
             indicator_at_max_price = lookback_indicators.loc[max_price_idx]
 
             if pd.isna(max_price_val) or pd.isna(indicator_at_max_price) or pd.isna(last_price) or pd.isna(last_indicator):
                 return False
 
-            # ۱. قیمت سقف بالاتر زده
-            price_makes_higher_high = last_price > max_price_val
-            # ۲. اندیکاتور سقف پایین‌تر زده
-            indicator_makes_lower_high = last_indicator < indicator_at_max_price
+            # ۱.
+            price_makes_higher_high = last_price > max_price_val # Fix: Indent
+            # ۲.
+            indicator_makes_lower_high = last_indicator < indicator_at_max_price # Fix: Indent
             
             return price_makes_higher_high and indicator_makes_lower_high
 
@@ -421,6 +425,7 @@ def _find_divergence(price_series: pd.Series, indicator_series: pd.Series, lookb
         logger.warning(f"Divergence check failed: {e}")
         return False
         
+    # 💡 FIX: Indentation error corrected (aligned with the function body)
     return False
 
 
@@ -429,7 +434,6 @@ def _check_oscillator_signals(tech_df: pd.DataFrame, close_ser: pd.Series, techn
     Checks oscillator-based signals like RSI and Stochastic.
     💡 G-Fix: شامل محاسبه صحیح واگرایی با نگاه به گذشته (جایگزین منطق اشتباه ۲ روزه).
     """
-
     satisfied_filters, reason_parts = [], {"technical": []}
     
     # تعریف دوره زمانی برای بررسی واگرایی
@@ -444,7 +448,7 @@ def _check_oscillator_signals(tech_df: pd.DataFrame, close_ser: pd.Series, techn
         reason_parts["technical"].append(f"Positive divergence on RSI ({current_rsi:.2f}).")
 
     
-# --- 💡 G-4: MACD Negative Divergence (Penalty) ---
+    # --- 💡 G-4: MACD Negative Divergence (Penalty) ---
     macd_series = tech_df['MACD'] if 'MACD' in tech_df.columns else pd.Series(dtype=float)
         
     if _find_divergence(close_ser, macd_series, DIVERGENCE_LOOKBACK, 'negative'):
@@ -453,8 +457,7 @@ def _check_oscillator_signals(tech_df: pd.DataFrame, close_ser: pd.Series, techn
         reason_parts["technical"].append(f"Negative divergence on MACD (Price up, MACD down).")
 
     # --- Stochastic Oscillator ---
-    current_stoch_k = _get_attr_safe(technical_rec, 
-'Stochastic_K')
+    current_stoch_k = _get_attr_safe(technical_rec, 'Stochastic_K')
     current_stoch_d = _get_attr_safe(technical_rec, 'Stochastic_D')
     prev_stoch_k = _get_attr_safe(prev_tech_rec, 'Stochastic_K')
     prev_stoch_d = _get_attr_safe(prev_tech_rec, 'Stochastic_D')
@@ -463,12 +466,13 @@ def _check_oscillator_signals(tech_df: pd.DataFrame, close_ser: pd.Series, techn
             satisfied_filters.append("Stochastic_Bullish_Cross_Oversold")
             reason_parts["technical"].append("Stochastic bullish cross in oversold area.")
             
-return satisfied_filters, reason_parts
+    # 💡 FIX: Indentation error corrected
+    return satisfied_filters, reason_parts
 
 def _check_trend_signals(technical_rec, prev_tech_rec, last_close_val, market_sentiment: str):
     """
     Checks trend-following signals.
-"""
+    """
     satisfied_filters, reason_parts = [], {"technical": []}
     
     # --- 💡 G-1: Trend State Definition (using SMA) ---
@@ -480,15 +484,15 @@ def _check_trend_signals(technical_rec, prev_tech_rec, last_close_val, market_se
         if sma20 > sma50:
             is_uptrend = True
             if last_close_val > sma20:
-               satisfied_filters.append("Strong_Uptrend_Confirmed")
+                satisfied_filters.append("Strong_Uptrend_Confirmed")
                 reason_parts["technical"].append(f"Strong Uptrend (SMA20 > SMA50, Close > SMA20).")
         else:
             satisfied_filters.append("Strong_Downtrend_Confirmed") # Penalty
             reason_parts["technical"].append(f"Downtrend Confirmed (SMA20 < SMA50).")
 
     # --- 💡 G-Trend: Long-Term Trend Penalty (SMA200) ---
-    sma200 = _get_attr_safe(technical_rec, 'SMA_200') # فرض می‌کنیم SMA_200 
-محاسبه و ذخیره شده
+    sma200 = _get_attr_safe(technical_rec, 'SMA_200') 
+    # فرض می‌کنیم SMA_200 محاسبه و ذخیره شده
     if sma200 is not None and last_close_val < sma200:
         satisfied_filters.append("Price_Below_SMA200")
         reason_parts["technical"].append(f"Penalty: Price is below long-term SMA200.")
@@ -499,10 +503,11 @@ def _check_trend_signals(technical_rec, prev_tech_rec, last_close_val, market_se
     prev_macd = _get_attr_safe(prev_tech_rec, 'MACD')
     prev_macd_signal = _get_attr_safe(prev_tech_rec, 'MACD_Signal')
     macd_crossed = False
+    
     if all(x is not None for x in [current_macd, current_macd_signal, prev_macd, prev_macd_signal]):
-    if current_macd > current_macd_signal and prev_macd <= prev_macd_signal:
+        # 💡 FIX: Indentation error corrected
+        if current_macd > current_macd_signal and prev_macd <= prev_macd_signal:
             satisfied_filters.append("MACD_Bullish_Cross_Confirmed")
-            # 💡 FIX: Indent Error (خط ۴۲۰)
             macd_crossed = True
         
     # --- HalfTrend ---
@@ -510,7 +515,7 @@ def _check_trend_signals(technical_rec, prev_tech_rec, last_close_val, market_se
     prev_halftrend = _get_attr_safe(prev_tech_rec, 'halftrend_signal')
     halftrend_buy = False
     if current_halftrend == 1 and prev_halftrend != 1:
-      satisfied_filters.append("HalfTrend_Buy_Signal")
+        satisfied_filters.append("HalfTrend_Buy_Signal")
         halftrend_buy = True
         
     # --- Dynamic Resistance Break (from model) ---
@@ -521,8 +526,7 @@ def _check_trend_signals(technical_rec, prev_tech_rec, last_close_val, market_se
         reason_parts["technical"].append(f"Broke a key dynamic resistance level around {res_level}.")
 
     # --- 💡 G-3: Market Sentiment Penalty (Expanded) ---
-    if market_sentiment 
-== "Bearish" and (macd_crossed or halftrend_buy or resistance_broken):
+    if market_sentiment == "Bearish" and (macd_crossed or halftrend_buy or resistance_broken):
         satisfied_filters.append("Signal_Against_Market_Trend")
         reason_parts["technical"].append(f"Penalty: Bullish signal detected in a Bearish market.")
 
@@ -537,8 +541,7 @@ def _check_volatility_signals(hist_df, technical_rec, last_close_val):
     if bollinger_low is not None and last_close_val < bollinger_low:
         satisfied_filters.append("Bollinger_Lower_Band_Touch")
 
-    # Squeeze 
-Momentum
+    # Squeeze Momentum
     prev_tech_rec = hist_df.iloc[-2] if len(hist_df) > 1 else technical_rec
     current_squeeze_on = _get_attr_safe(technical_rec, 'squeeze_on')
     prev_squeeze_on = _get_attr_safe(prev_tech_rec, 'squeeze_on')
@@ -551,8 +554,7 @@ Momentum
 def _check_volume_signals(hist_df, tech_df, technical_rec, close_ser):
     """
     Checks for volume-based signals including Z-Score (last day spike) 
-    and Volume MA trend 
-(sustained interest).
+    and Volume MA trend (sustained interest).
     """
     satisfied_filters, reason_parts = [], {"technical": []}
     
@@ -564,38 +566,39 @@ def _check_volume_signals(hist_df, tech_df, technical_rec, close_ser):
             is_locked_market = True
             reason_parts["technical"].append(f"Note: Market was locked (High == Low). Volume spikes ignored.")
     
-   # 1. High Volume On Up Day (Z-Score)
+    # 1. High Volume On Up Day (Z-Score)
     if 'volume' in hist_df.columns and len(hist_df) >= 20 and len(close_ser) > 1:
         volume_z_score = calculate_z_score(pd.to_numeric(hist_df['volume'], errors='coerce').dropna().iloc[-20:])
         # 💡 G-Volume: سیگنال فقط در صورتی فعال می‌شود که صف نباشد
         if volume_z_score is not None and volume_z_score > 1.5 and close_ser.iloc[-1] > close_ser.iloc[-2] and not is_locked_market:
             satisfied_filters.append("High_Volume_On_Up_Day")
-           reason_parts["technical"].append(f"High volume (Z-Score: {volume_z_score:.2f}) on a positive day.")
+            reason_parts["technical"].append(f"High volume (Z-Score: {volume_z_score:.2f}) on a positive day.")
 
     # 2. 💡 G-Volume: Volume MA Is Rising (Using Slope)
     if is_data_sufficient(tech_df, 10): # حداقل ۱۰ روز داده برای محاسبه شیب
         try:
             # ۱۰ دیتای آخر میانگین حجم ۲۰ روزه
             vol_ma_series = pd.to_numeric(tech_df['Volume_MA_20'].dropna().tail(10))
-            if len(vol_ma_series) >= 5: # حداقل ۵ نقطه برای رگرسیون
-              x = np.arange(len(vol_ma_series))
+            if len(vol_ma_series) >= 5: # حداقل ۵ 
+                x = np.arange(len(vol_ma_series))
                 # محاسبه شیب خط رگرسیون
                 slope = np.polyfit(x, vol_ma_series, 1)[0] 
                 
-                # اگر شیب مثبت باشد (روند صعودی)
-           if slope > 0:
+                # اگر شیب مثبت باشد 
+                if slope > 0:
                     satisfied_filters.append("Volume_MA_Is_Rising")
                     reason_parts["technical"].append(f"Volume MA (20d) slope is positive ({slope:,.0f}).")
         except Exception as e:
             logger.warning(f"Could not calculate volume MA slope: {e}")
-           pass 
+            pass
             
+    # 💡 FIX: Indentation error corrected
     return satisfied_filters, reason_parts
 
 def _check_technical_filters(hist_df, tech_df, market_sentiment: str):
     """
     Checks all technical indicators by calling specialized sub-functions.
-(Coordinator function)
+    (Coordinator function)
     """
     all_satisfied_filters, all_reason_parts = [], {"technical": []}
     if not is_data_sufficient(tech_df, 2) or not is_data_sufficient(hist_df, MIN_REQUIRED_HISTORY_DAYS):
@@ -609,9 +612,8 @@ def _check_technical_filters(hist_df, tech_df, market_sentiment: str):
     if last_close_val is None:
         return all_satisfied_filters, all_reason_parts
 
-    # 💡 FIX: Indent Error (خط ۳۵۰)
-    # 
-Call sub-functions and aggregate results
+    # 💡 FIX: Indent Error (خط ۳۵۰) (Ensuring the for loop is at the correct level)
+    # Call sub-functions and aggregate results
     for func in [_check_oscillator_signals, _check_trend_signals, _check_volatility_signals, _check_volume_signals]:
         # Adjust arguments as needed per function signature
         
@@ -627,12 +629,14 @@ Call sub-functions and aggregate results
         
         elif func == _check_volume_signals:
             satisfied, reasons = func(hist_df, tech_df, technical_rec, close_ser)
+   
         else:
             continue
 
-   all_satisfied_filters.extend(satisfied)
+        # 💡 FIX: Indentation error corrected (this belongs in the loop)
+        all_satisfied_filters.extend(satisfied) # Fix: Indent
         if "technical" in reasons:
-            all_reason_parts.setdefault("technical", []).extend(reasons["technical"])
+            all_reason_parts.setdefault("technical", []).extend(reasons["technical"]) # Fix: Indent
 
     return all_satisfied_filters, all_reason_parts
 
@@ -642,7 +646,7 @@ Call sub-functions and aggregate results
 def _check_simple_fundamental_filters(symbol_data_rec):
     """
     بررسی فیلترهای ساده فاندامنتال (P/E) برای جلوگیری از سهام حبابی.
-"""
+    """
     satisfied_filters, reason_parts = [], {"fundamental": []}
     if symbol_data_rec:
         # pe_ratio از ComprehensiveSymbolData خوانده می‌شود
@@ -653,8 +657,7 @@ def _check_simple_fundamental_filters(symbol_data_rec):
     return satisfied_filters, reason_parts
 
 def _check_smart_money_filters(hist_df):
-    """REVISED: Now also 
-checks for heavy individual buy pressure on the last day."""
+    """REVISED: Now also checks for heavy individual buy pressure on the last day."""
     satisfied_filters = []
     reason_parts = {"smart_money": []}
     trend_lookback = 10
@@ -665,63 +668,55 @@ checks for heavy individual buy pressure on the last day."""
     if len(hist_df) >= trend_lookback:
         smart_money_flow_df = calculate_smart_money_flow(hist_df)
         if not smart_money_flow_df.empty and len(smart_money_flow_df) >= trend_lookback:
-          trend_net_flow = smart_money_flow_df['individual_net_flow'].iloc[-trend_lookback:].sum()
+            trend_net_flow = smart_money_flow_df['individual_net_flow'].iloc[-trend_lookback:].sum()
             if trend_net_flow > 0:
                 satisfied_filters.append("Positive_Real_Money_Flow_Trend_10D")
                 reason_parts["smart_money"].append(f"Positive real money inflow over the last {trend_lookback} days.")
             elif trend_net_flow < 0:
                 satisfied_filters.append("Negative_Real_Money_Flow_Trend_10D")
-    
-   # NEW Check 2: Heavy Individual Buy Pressure on the last day
+                reason_parts["smart_money"].append(f"Negative real money outflow over the last {trend_lookback} days.")
+
+    #NEW Check 2: Heavy Individual Buy Pressure on the last day
     last_day = hist_df.iloc[-1]
     required_cols = ['buy_i_volume', 'buy_count_i', 'sell_i_volume', 'sell_count_i']
     if all(col in last_day and pd.notna(last_day[col]) for col in required_cols):
         if last_day['buy_count_i'] > 0 and last_day['sell_count_i'] > 0:
             per_capita_buy = last_day['buy_i_volume'] / last_day['buy_count_i']
             per_capita_sell = last_day['sell_i_volume'] / last_day['sell_count_i']
-            
-
             # Check if per capita buy is 2.5x greater than sell
-            if per_capita_buy > (per_capita_sell * 2.5):
+            if per_capita_buy > (per_capita_sell * 2.5): 
                 satisfied_filters.append("Heavy_Individual_Buy_Pressure")
                 reason_parts["smart_money"].append(f"Significant buy pressure detected (Per capita buy: {per_capita_buy:,.0f} vs sell: {per_capita_sell:,.0f}).")
-
     return satisfied_filters, reason_parts
-
 
 def _check_power_thrust_signal(hist_df, close_ser):
     """
-    Checks for a 
-Power Thrust Signal: a combination of high volume,
+    Checks for a Power Thrust Signal: a combination of high volume,
     heavy individual buy pressure, and a positive closing day.
-"""
+    """
     satisfied_filters, reason_parts = [], {"power_thrust": []}
-    
     # اطمینان از وجود داده کافی برای تحلیل
     if hist_df is None or len(hist_df) < 20 or close_ser.empty or len(close_ser) < 2:
         return satisfied_filters, reason_parts
 
     last_day = hist_df.iloc[-1]
-    
     # --- 💡 G-Volume: چک کردن قفل صف ---
     is_locked_market = last_day['high'] == last_day['low']
     if is_locked_market:
-        return satisfied_filters, reason_parts # سیگنال قدرت 
-در صف خرید/فروش، معتبر نیست
+        return satisfied_filters, reason_parts # سیگنال قدرت در صف خرید/فروش، معتبر نیست
 
     # --- شرط ۱: روز معاملاتی مثبت ---
     is_up_day = close_ser.iloc[-1] > close_ser.iloc[-2]
     if not is_up_day:
-        return satisfied_filters, reason_parts # اگر روز 
-مثبت نیست، ادامه نده
+        return satisfied_filters, reason_parts # اگر روز مثبت نیست، ادامه نده
 
-    # --- شرط ۲: حجم معاملات بسیار بالا (استفاده از Z-Score) ---
+    # --- شرط ۲: حجم معاملات بسیار بالا 
+    # (استفاده از Z-Score) ---
     volume_series = pd.to_numeric(hist_df['volume'], errors='coerce').dropna().tail(20)
     volume_z_score = calculate_z_score(volume_series)
     # آستانه بالا برای حجم، مثلا Z-Score بیشتر از 1.8
-    is_high_volume = volume_z_score is not None and volume_z_score > 
-1.8 
-    
+    is_high_volume = volume_z_score is not None and volume_z_score > 1.8
+
     # --- شرط ۳: فشار خرید سنگین حقیقی‌ها ---
     is_heavy_buy_pressure = False
     required_cols = ['buy_i_volume', 'buy_count_i', 'sell_i_volume', 'sell_count_i']
@@ -729,27 +724,23 @@ Power Thrust Signal: a combination of high volume,
         if last_day['buy_count_i'] > 0 and last_day['sell_count_i'] > 0:
             per_capita_buy = last_day['buy_i_volume'] / last_day['buy_count_i']
             per_capita_sell = last_day['sell_i_volume'] / last_day['sell_count_i']
-        # آستانه بالا برای سرانه خرید، مثلا ۲.۵ برابر سرانه فروش
-            if per_capita_buy > (per_capita_sell * 2.5):
+            # آستانه بالا برای سرانه خرید، مثلا ۲.۵ برابر سرانه فروش
+            if per_capita_buy > (per_capita_sell * 2.5): 
                 is_heavy_buy_pressure = True
 
     # --- ترکیب نهایی ---
     if is_high_volume and is_heavy_buy_pressure:
         satisfied_filters.append("Power_Thrust_Signal")
         reason_parts["power_thrust"].append(
-            f"Power signal detected! 
-High Volume (Z-Score: {volume_z_score:.2f}) and Heavy Buy Pressure."
+            f"Power signal detected! High Volume (Z-Score: {volume_z_score:.2f}) and Heavy Buy Pressure."
         )
-            
     return satisfied_filters, reason_parts
 
-
-# --- NEW: Functions for new strategic filters --- 
+# --- NEW: Functions for new strategic filters ---
 def _get_leading_sectors():
     """ 
-    با کوئری به جدول DailySectorPerformance، لیست صنایع پیشرو (مثلاً 4 
-صنعت برتر) در آخرین روز تحلیل شده را برمی‌گرداند.
-"""
+    با کوئری به جدول DailySectorPerformance، لیست صنایع پیشرو (مثلاً 4 صنعت برتر) در آخرین روز تحلیل شده را برمی‌گرداند.
+    """
     try:
         latest_date_query = db.session.query(func.max(DailySectorPerformance.jdate)).scalar()
         if not latest_date_query:
@@ -758,7 +749,7 @@ def _get_leading_sectors():
 
         # دریافت 4 صنعت برتر در آخرین روز
         leading_sectors_query = db.session.query(DailySectorPerformance.sector_name)\
-           .filter(DailySectorPerformance.jdate == latest_date_query)\
+            .filter(DailySectorPerformance.jdate == latest_date_query)\
             .order_by(DailySectorPerformance.rank.asc())\
             .limit(4).all()
         leading_sectors = {row[0] for row in leading_sectors_query}
@@ -766,8 +757,8 @@ def _get_leading_sectors():
         return leading_sectors
     except Exception as e:
         logger.error(f"خطا در دریافت صنایع پیشرو از دیتابیس: {e}")
-        return {"خودرو و ساخت 
-قطعات"} # Fallback in case of error
+        # 💡 FIX: Indentation error corrected
+        return {"خودرو و ساخت قطعات"} # Fallback in case of error
 
 def _check_sector_strength_filter(symbol_sector, leading_sectors):
     """Checks if the symbol belongs to a leading sector."""
@@ -780,370 +771,445 @@ def _check_sector_strength_filter(symbol_sector, leading_sectors):
 def _check_static_levels_filters(technical_rec, last_close_val):
     """ 
     Checks for proximity to static support or breakout of static resistance.
-This assumes 'static_support_level' and 'static_resistance_level' fields are pre-calculated and available in the TechnicalIndicatorData record.
-"""
+    This assumes 'static_support_level' and 'static_resistance_level' fields are pre-calculated and 
+    available in the TechnicalIndicatorData record.
+    """
     satisfied_filters, reason_parts = [], {"static_levels": []}
-
-    is_rec_valid = technical_rec is not None and ( 
-        not isinstance(technical_rec, pd.Series) or not technical_rec.empty 
+    is_rec_valid = technical_rec is not None and (
+        not isinstance(technical_rec, pd.Series) or not technical_rec.empty
     )
-    if not is_rec_valid or last_close_val is None or last_close_val <= 0:
+
+    if not is_rec_valid:
         return satisfied_filters, reason_parts
 
-    # 1. Check for proximity to static support
-    support_level = _get_attr_safe(technical_rec, 'static_support_level')
-
-    if support_level and support_level > 0:
-        distance = 
-last_close_val - support_level
-        proximity_percent = abs(distance) / support_level 
-        if proximity_percent <= 0.02 and distance >= -0.005 * support_level: # نزدیک یا کمی بالاتر از سطح (حداکثر 0.5% زیر سطح)
+    # --- Static Support Proximity ---
+    static_support = _get_attr_safe(technical_rec, 'static_support_level')
+    if static_support is not None and static_support > 0:
+        # اگر قیمت بین 0 تا 3 درصد بالای حمایت باشد
+        distance_from_support = ((last_close_val - static_support) / static_support) * 100
+        if 0 <= distance_from_support <= 3:
             satisfied_filters.append("Near_Static_Support")
-            reason_parts["static_levels"].append(
-                f"Price is near a major static support level at {support_level:,.0f} (Proximity: {proximity_percent*100:.1f}%)."
-      )
+            reason_parts["static_levels"].append(f"Price is near static support ({static_support:,.0f}, {distance_from_support:.1f}% above).")
 
-    # 2. Check for breakout of static resistance
-    resistance_level = _get_attr_safe(technical_rec, 'resistance_level_50d')
-
-    if resistance_level and resistance_level > 0:
-        if last_close_val > resistance_level and last_close_val < 1.03 * resistance_level: # شرط دوم: قیمت بیش از حد از مقاومت دور نشده باشد (شکست تازه و معتبر)
+    # --- Static Resistance Breakout ---
+    static_resistance = _get_attr_safe(technical_rec, 'static_resistance_level')
+    if static_resistance is not None and static_resistance > 0:
+        # اگر قیمت بیش از 1% بالاتر از مقاومت باشد (تایید شکست)
+        distance_from_resistance = ((last_close_val - static_resistance) / static_resistance) * 100
+        if distance_from_resistance > 1:
             satisfied_filters.append("Static_Resistance_Broken")
-            reason_parts["static_levels"].append(
-          f"Price broke a major static resistance level at {resistance_level:,.0f}."
-            )
+            reason_parts["static_levels"].append(f"Static resistance broken ({static_resistance:,.0f}, {distance_from_resistance:.1f}% above).")
 
     return satisfied_filters, reason_parts
-# --- END NEW STRATEGIC FILTERS --- 
 
-
-# 💡 G-Performance: تابع کمکی برای اجرای موازی
-def _analyze_single_symbol(
-    symbol: ComprehensiveSymbolData,
-    hist_groups: Dict[str, pd.DataFrame],
-    tech_groups: Dict[str, pd.DataFrame],
-    ml_prediction_set: set,
-    leading_sectors: set,
-    market_sentiment: str,
-    score_threshold: int,
-    today_jdate: str
-) -> Optional[Dict]:
+def _check_ml_prediction_filter(symbol_id):
     """
-    هسته 
-منطق تحلیل برای یک نماد واحد.
-    این تابع برای اجرای موازی (joblib) طراحی شده است.
-"""
-    
-    # 💡 G-Performance: این تابع کمکی باید در داخل تابع اصلی تعریف شود
-    # یا به عنوان یک تابع مستقل در سطح بالا (که در اینجا انتخاب شده)
-    def run_check(check_func, *args):
-        filters, reasons = check_func(*args)
-        all_satisfied_filters.extend(filters)
-        all_reason_parts.update(reasons)
+    Checks the MLPrediction table for a positive prediction for the symbol.
+    """
+    satisfied_filters, reason_parts = [], {"ml_prediction": []}
 
     try:
-        symbol_hist_df = hist_groups.get(symbol.symbol_id, pd.DataFrame()).copy()
-        symbol_tech_df = tech_groups.get(symbol.symbol_id, pd.DataFrame()).copy()
-
-    if len(symbol_hist_df) < MIN_REQUIRED_HISTORY_DAYS:
-            logger.debug(f"Skipped {symbol.symbol_name} ({symbol.symbol_id}): insufficient history ({len(symbol_hist_df)} < {MIN_REQUIRED_HISTORY_DAYS})")
-            return None
-
-        last_close_series = _get_close_series_from_hist_df(symbol_hist_df)
-        entry_price = float(last_close_series.iloc[-1]) if not last_close_series.empty else None
-        if entry_price is None or pd.isna(entry_price):
-            logger.warning(f"Skipping {symbol.symbol_name} ({symbol.symbol_id}) due to missing entry price.")
-         return None
-
-        all_satisfied_filters = []
-        all_reason_parts = {}
-
-        technical_rec = symbol_tech_df.iloc[-1] if not symbol_tech_df.empty else None
+        # 💡 G-ML: استفاده از latest_prediction_date
+        latest_prediction_date = db.session.query(func.max(MLPrediction.jdate)).scalar()
         
-        # 💡 G-Fundamental: از خود آبجکت symbol برای P/E استفاده می‌کنیم
-        symbol_data_rec = symbol 
+        if not latest_prediction_date:
+            return satisfied_filters, reason_parts
 
-        # --- Run All Filters ---
-    run_check(_check_sector_strength_filter, getattr(symbol, 'sector_name', ''), leading_sectors)
-        run_check(_check_technical_filters, symbol_hist_df, symbol_tech_df, market_sentiment)
-        run_check(_check_market_condition_filters, symbol_hist_df, symbol_tech_df)
-        run_check(_check_static_levels_filters, technical_rec, entry_price)
-        run_check(_check_simple_fundamental_filters, symbol_data_rec) # 💡 G-Fundamental
-        run_check(_check_smart_money_filters, symbol_hist_df)
-        run_check(_check_power_thrust_signal, symbol_hist_df, last_close_series)
-
-        # ML Filter
-        if symbol.symbol_id in ml_prediction_set:
-           all_satisfied_filters.append("ML_Predicts_Uptrend")
-            all_reason_parts.setdefault("ml_signal", []).append("ML model predicts a high-probability uptrend.")
-
-        # Calculate Weighted Score
-        score = sum(FILTER_WEIGHTS.get(f, {}).get('weight', 0) for f in all_satisfied_filters)
-
-        if score >= score_threshold:
-            return {
-                "symbol_id": symbol.symbol_id,
-           "symbol_name": symbol.symbol_name,
-                "entry_price": entry_price,
-                "entry_date": date.today(),
-                "jentry_date": today_jdate,
-                "outlook": "Bullish",
-                "reason_json": json.dumps(all_reason_parts, ensure_ascii=False),
-          "satisfied_filters": json.dumps(list(set(all_satisfied_filters)), ensure_ascii=False),
-                "score": score
-            }
-        
-        return None # Score below threshold
-    
-    except Exception as e:
-        logger.error(f"Error processing symbol {symbol.symbol_id}: {e}", exc_info=True)
-        return None
-
-
-def run_weekly_watchlist_selection():
-    """
-  انتخاب نمادها برای واچ‌لیست هفتگی با استفاده از داده‌های حجیم،
-    امتیازدهی دینامیک و فیلترهای پیشرفته استراتژیک.
-"""
-    # 💡 G-CleanUp: ایمپورت‌ها قبلاً به بالا منتقل شدند
-    
-    logger.info("🚀 Starting Weekly Watchlist selection process...")
-    start_time = time.time()
-
-    # Step 1: Determine market sentiment and leading sectors
-    market_sentiment = _get_market_sentiment()
-    leading_sectors = _get_leading_sectors()
-
-    if market_sentiment == "Bullish":
-        score_threshold = 7
-    elif market_sentiment == "Neutral":
-        score_threshold = 8
-    else:
-    score_threshold = 10
-
-    logger.info(f"📈 Market sentiment: {market_sentiment}, Score threshold: >= {score_threshold}")
-    logger.info(f"🏭 Leading sectors identified: {leading_sectors}")
-
-    # Step 2: Bulk Data Fetching
-    allowed_market_types = ['بورس', 'فرابورس', 'پایه فرابورس', 'بورس کالا', 'بورس انرژی']
-
-    # Fetch active symbols
-    symbols_to_analyze = ComprehensiveSymbolData.query.filter(
-        ComprehensiveSymbolData.market_type.in_(allowed_market_types)
-    ).all()
-
-    if not symbols_to_analyze:
-        logger.warning("⚠️ No symbols found for analysis.")
-        return False, "No active 
-symbols available for analysis."
-    
-    # 💡 FIX: Indent Error (خط ۵۵۰)
-    symbol_ids = [s.symbol_id for s in symbols_to_analyze]
-    total_symbols = len(symbol_ids)
-    logger.info(f"🧩 Found {total_symbols} active symbols for analysis.")
-
-    fetch_start = time.time()
-
-    # Calculate lookback date
-    today_greg = datetime.now().date()
-    # 💡 G-Trend: افزایش lookback برای پوشش SMA200 (اگرچه داده‌های تکنیکال ممکن است هنوز محدود باشند)
-    lookback_greg = today_greg - timedelta(days=max(TECHNICAL_DATA_LOOKBACK_DAYS * 2, 250))
-    lookback_jdate_str = convert_gregorian_to_jalali(lookback_greg)
- if not lookback_jdate_str:
-        logger.error("❌ Could not determine lookback date. 
-Aborting.")
-        return False, "Failed to calculate lookback date."
-    # Fetch Historical Data
-    hist_records = HistoricalData.query.filter(
-        HistoricalData.symbol_id.in_(symbol_ids),
-        HistoricalData.jdate >= lookback_jdate_str
-    ).all()
-    hist_df = pd.DataFrame([h.__dict__ for h in hist_records]).drop(columns=['_sa_instance_state'], errors='ignore')
-
-    # Fetch Technical Data
-    tech_records = TechnicalIndicatorData.query.filter(
-        TechnicalIndicatorData.symbol_id.in_(symbol_ids),
-        TechnicalIndicatorData.jdate >= lookback_jdate_str
-    ).all()
-    tech_df = pd.DataFrame([t.__dict__ for t 
-in tech_records]).drop(columns=['_sa_instance_state'], errors='ignore')
-
-    # 💡 G-CleanUp: حذف واکشی فاندامنتال/کندل
-    today_jdate = get_today_jdate_str()
-
-    # Fetch ML Predictions
-    ml_predictions = MLPrediction.query.filter(
-        MLPrediction.symbol_id.in_(symbol_ids),
-        MLPrediction.jprediction_date == today_jdate,
-        MLPrediction.predicted_trend == 'Uptrend'
-    ).all()
-
-    fetch_end = time.time()
-    logger.info(f"📥 Bulk fetch time: {fetch_end - fetch_start:.2f}s (hist: {len(hist_df)}, tech: {len(tech_df)} rows)")
-
-    # Grouping Data
-    group_start = time.time()
-    hist_groups = {k: v.sort_values(by='jdate') for k, v in hist_df.groupby("symbol_id")} if not hist_df.empty else {}
-
-    tech_groups = {k: v.sort_values(by='jdate') for k, v in tech_df.groupby("symbol_id")} if not tech_df.empty else {}
-    ml_prediction_set = {rec.symbol_id for rec in ml_predictions}
-
-    group_end = time.time()
-    logger.info(f"📊 Data grouping completed: {group_end - group_start:.2f}s. 
-Groups: hist={len(hist_groups)}, tech={len(tech_groups)}")
-
-    logger.info("📊 Data grouping completed. Beginning scoring and selection...")
-
-    # Step 3: 💡 G-Performance: Scoring (Parallelized)
-    loop_start = time.time()
-    
-    # استفاده از n_jobs=-1 برای استفاده از تمام هسته‌ها
-    # verbose=5 برای نمایش لاگ پیشرفت
-    parallel = Parallel(n_jobs=-1, verbose=5) 
-    
-    results = parallel(delayed(_analyze_single_symbol)(
-        symbol,
-        hist_groups,
-        tech_groups,
-    ml_prediction_set,
-        leading_sectors,
-        market_sentiment,
-        score_threshold,
-        today_jdate
-    ) for symbol in symbols_to_analyze)
-    
-    # فیلتر کردن نتایج None (سهامی که رد شدند)
-    watchlist_candidates = [res for res in results if res is not None]
-
-    loop_end = time.time()
-    processed_count = total_symbols # joblib همه را پردازش می‌کند
-    skipped_count = total_symbols - len(results) # (تخمین، چون Noneها هم در results هستند)
-
-
-    logger.info(f"🔄 Parallel loop completed: Processed {processed_count}/{total_symbols} symbols. 
-Loop time: {loop_end - loop_start:.2f}s")
-
-    logger.info(f"✅ {len(watchlist_candidates)} symbols passed the threshold ({score_threshold}). Saving top 8...")
-
-    # Step 4: Save results
-    watchlist_candidates.sort(key=lambda x: x['score'], reverse=True)
-    final_watchlist = watchlist_candidates[:8]
-
-    saved_count = 0
-    for candidate in final_watchlist:
-        existing_result = WeeklyWatchlistResult.query.filter_by(
-            symbol_id=candidate['symbol_id'], jentry_date=candidate['jentry_date']
+        prediction = db.session.query(MLPrediction).filter(
+            MLPrediction.symbol_id == symbol_id,
+            MLPrediction.jdate == latest_prediction_date
         ).first()
 
-        if existing_result:
-       existing_result.entry_price = candidate['entry_price']
-            existing_result.outlook = candidate['outlook']
-            existing_result.reason = candidate['satisfied_filters']
-            existing_result.probability_percent = min(100, candidate['score'] * 4)
-            existing_result.created_at = datetime.now()
-            setattr(existing_result, 'score', candidate['score']) # 💡 G-Fix: ذخیره امتیاز در آپدیت
-        else:
-        existing_result = WeeklyWatchlistResult(
-                signal_unique_id=str(uuid.uuid4()),
-                symbol_id=candidate['symbol_id'],
-                symbol_name=candidate['symbol_name'],
-                entry_price=candidate['entry_price'],
-                entry_date=candidate['entry_date'],
-          jentry_date=candidate['jentry_date'],
-                outlook=candidate['outlook'],
-                reason=candidate['satisfied_filters'],
-                probability_percent=min(100, candidate['score'] * 4),
-                status='active',
-                score=candidate['score'] # 💡 G-Fix: ذخیره امتیاز در ردیف جدید
-      )
-        db.session.add(existing_result)
-        saved_count += 1
+        # 💡 G-ML: شرط برای روند صعودی: 'Uptrend' و اطمینان بالا (مثلاً > 60%)
+        if prediction and prediction.prediction == 'Uptrend' and prediction.probability_percent > 60:
+            satisfied_filters.append("ML_Predicts_Uptrend")
+            reason_parts["ml_prediction"].append(f"ML predicts uptrend (Prob: {prediction.probability_percent:.1f}%).")
 
-    try:
-        db.session.commit()
-        message = f"Weekly Watchlist selection completed. 
-Saved {saved_count} symbols."
-        logger.info(message)
-        total_time = time.time() - start_time
-        logger.info(f"⏱️ Full process time: {total_time:.2f}s")
-        return True, message
     except Exception as e:
-        db.session.rollback()
-        logger.error(f"❌ Database commit failed: {e}", exc_info=True)
-        return False, "Database commit failed."
+        logger.error(f"Error checking ML prediction for {symbol_id}: {e}")
+        pass
 
+    return satisfied_filters, reason_parts
 
-
-def get_weekly_watchlist_results(jdate_str: Optional[str] = None):
+# --- Main Watchlist Service Class ---
+class WeeklyWatchlistService:
     """
-    بازیابی آخرین نتایج واچ‌لیست 
-هفتگی (یا تاریخ مشخص‌شده در صورت ارسال).
-    خروجی شامل جزئیات نمادها و آخرین تاریخ به‌روزرسانی است.
-"""
+    سرویس اصلی برای محاسبه و تولید لیست هفتگی سهام مستعد رشد (Watchlist).
+    """
 
-    logger.info("📊 Retrieving latest weekly watchlist results...")
+    def __init__(self):
+        self.leading_sectors = _get_leading_sectors()
 
-    # --- Step 1: تعیین آخرین تاریخ ---
-    if not jdate_str:
-        latest_record = WeeklyWatchlistResult.query.order_by(WeeklyWatchlistResult.jentry_date.desc()).first()
-        if not latest_record or not latest_record.jentry_date:
-            logger.warning("⚠️ No weekly watchlist results found.")
-            return {"top_watchlist_stocks": [], "last_updated": "نامشخص"}
-        # 💡 FIX: Indent Error (خط ۶۸۰)
-      jdate_str = latest_record.jentry_date
+    def _get_history_and_tech_data(self, symbol_id, symbol_name):
+        """
+        واکشی داده‌های تاریخی و فنی مورد نیاز برای تحلیل یک نماد.
+        """
+        # 💡 G-Fix: تنظیم دوره زمانی برای واکشی
+        end_date = datetime.now().date()
+        # نیاز به داده بیشتر از Lookback Days برای محاسبات اندیکاتور
+        start_date = end_date - timedelta(days=TECHNICAL_DATA_LOOKBACK_DAYS + 50) 
+        
+        try:
+            # 1. Historical Data
+            hist_records = db.session.query(HistoricalData).filter(
+                HistoricalData.symbol_id == symbol_id,
+                HistoricalData.gregorian_date >= start_date
+            ).order_by(HistoricalData.gregorian_date).all()
+            hist_df = pd.DataFrame([r.to_dict() for r in hist_records])
+            
+            # 2. Technical Data
+            tech_records = db.session.query(TechnicalIndicatorData).filter(
+                TechnicalIndicatorData.symbol_id == symbol_id,
+                TechnicalIndicatorData.gregorian_date >= start_date
+            ).order_by(TechnicalIndicatorData.gregorian_date).all()
+            tech_df = pd.DataFrame([r.to_dict() for r in tech_records])
 
-    logger.info(f"🗓 Latest Weekly Watchlist results date: {jdate_str}")
+            # 💡 G-CleanUp: تبدیل jdate به تاریخ گرگورین برای ادغام با TechnicalData
+            if not hist_df.empty:
+                hist_df['gregorian_date'] = hist_df['jdate'].apply(convert_jalali_to_gregorian_timestamp)
+                hist_df.set_index('gregorian_date', inplace=True)
+                hist_df.sort_index(inplace=True)
+            
+            if not tech_df.empty:
+                tech_df['gregorian_date'] = tech_df['jdate'].apply(convert_jalali_to_gregorian_timestamp)
+                tech_df.set_index('gregorian_date', inplace=True)
+                tech_df.sort_index(inplace=True)
+                
+                # 💡 G-Data: پاکسازی و اطمینان از صحت داده‌ها در TechnicalIndicatorData
+                # (این مرحله قبلاً در TechnicalIndicatorDataUpdater انجام شده است)
 
-    # --- Step 2: واکشی نتایج ---
-    results = WeeklyWatchlistResult.query.filter_by(jentry_date=jdate_str)\
-                                         .order_by(WeeklyWatchlistResult.score.desc().nullslast(), WeeklyWatchlistResult.created_at.desc()).all()
+            return hist_df, tech_df
 
-    if not results:
-        logger.warning("⚠️ No results found for this date.")
-     return {"top_watchlist_stocks": [], "last_updated": jdate_str}
+        except Exception as e:
+            logger.error(f"Error fetching data for {symbol_name} ({symbol_id}): {e}")
+            return pd.DataFrame(), pd.DataFrame()
 
-    # --- Step 3: واکشی نام شرکت‌ها برای نمادهای واچ‌لیست ---
-    symbol_ids_in_watchlist = [r.symbol_id for r in results]
-    company_name_map = {}
+    def _analyze_symbol(self, symbol_data_rec):
+        """
+        آنالیز کامل یک نماد بر اساس داده‌های تاریخی و فنی.
+        خروجی: (symbol_id, symbol_name, outlook, score, reason)
+        """
+        symbol_id = symbol_data_rec.symbol_id
+        symbol_name = symbol_data_rec.symbol_name
+        
+        # 1. واکشی داده‌ها
+        hist_df, tech_df = self._get_history_and_tech_data(symbol_id, symbol_name)
 
-    if symbol_ids_in_watchlist:
-        company_name_records = ComprehensiveSymbolData.query.filter(
-            ComprehensiveSymbolData.symbol_id.in_(symbol_ids_in_watchlist)
-        ).with_entities(
-            ComprehensiveSymbolData.symbol_id,
-            ComprehensiveSymbolData.company_name
-  ).all()
-        company_name_map = {sid: cname for sid, cname in company_name_records}
+        if not is_data_sufficient(hist_df, MIN_REQUIRED_HISTORY_DAYS):
+            logger.warning(f"Insufficient historical data for {symbol_name}.")
+            return None
+        
+        # 💡 G-Check: بررسی کفایت داده‌های فنی برای اجرای تحلیل
+        if not is_data_sufficient(tech_df, 2):
+            logger.warning(f"Insufficient technical data for {symbol_name}.")
+            return None
+            
+        # 2. تعیین سنتیمنت بازار
+        market_sentiment = _get_market_sentiment() 
+        
+        # 3. اجرای تمام فیلترها
+        
+        # 3.1. Technical Filters
+        tech_filters, tech_reasons = _check_technical_filters(hist_df, tech_df, market_sentiment)
+        
+        # 3.2. Market/Volatility Filters
+        market_filters, market_reasons = _check_market_condition_filters(hist_df, tech_df)
+        
+        # 3.3. Smart Money Filters
+        money_filters, money_reasons = _check_smart_money_filters(hist_df)
+        
+        # 3.4. Power Thrust Filter
+        # 💡 G-Fix: اطمینان از ارسال close_ser صحیح
+        close_ser = _get_close_series_from_hist_df(hist_df) 
+        power_filters, power_reasons = _check_power_thrust_signal(hist_df, close_ser)
+        
+        # 3.5. Static Levels Filters
+        last_tech = tech_df.iloc[-1]
+        last_close = close_ser.iloc[-1]
+        static_filters, static_reasons = _check_static_levels_filters(last_tech, last_close)
+        
+        # 3.6. Sector Strength Filter
+        sector_filters, sector_reasons = _check_sector_strength_filter(symbol_data_rec.sector, self.leading_sectors)
 
-    # --- Step 4: ساخت خروجی نهایی ---
-    output_stocks = []
-    for r in results:
-        output_stocks.append({
-            "signal_unique_id": r.signal_unique_id,
-            "symbol_id": r.symbol_id,
-            "symbol_name": r.symbol_name,
-         "company_name": company_name_map.get(r.symbol_id, r.symbol_name),
-            "outlook": r.outlook,
-            "reason": r.reason,
-            "entry_price": r.entry_price,
-            "jentry_date": r.jentry_date,
-            "exit_price": r.exit_price,
-            "jexit_date": r.jexit_date,
-            "profit_loss_percentage": r.profit_loss_percentage,
-          "status": r.status,
-            "probability_percent": getattr(r, "probability_percent", None),
-            "score": getattr(r, "score", None)
-        })
+        # 3.7. Simple Fundamental Filter
+        fundamental_filters, fundamental_reasons = _check_simple_fundamental_filters(symbol_data_rec)
 
-    # --- Step 5: مرتب‌سازی بر اساس امتیاز ---
-    # 💡 G-Fix: اطمینان از مرتب‌سازی حتی اگر score برابر با None باشد
-    output_stocks.sort(key=lambda x: (x.get("score") or 0), reverse=True)
+        # 3.8. ML Prediction Filter
+        ml_filters, ml_reasons = _check_ml_prediction_filter(symbol_id)
+        
+        # 4. تجمیع نتایج
+        all_satisfied_filters = tech_filters + market_filters + money_filters + power_filters + static_filters + sector_filters + fundamental_filters + ml_filters
+        
+        all_reasons = {
+            "technical": tech_reasons.get("technical", []),
+            "market_condition": market_reasons.get("market_condition", []),
+            "smart_money": money_reasons.get("smart_money", []),
+            "power_thrust": power_reasons.get("power_thrust", []),
+            "static_levels": static_reasons.get("static_levels", []),
+            "sector_strength": sector_reasons.get("sector_strength", []),
+            "fundamental": fundamental_reasons.get("fundamental", []),
+            "ml_prediction": ml_reasons.get("ml_prediction", []),
+        }
 
-    logger.info(f"✅ Retrieved and enriched {len(output_stocks)} weekly watchlist results for {jdate_str}.")
+        # 5. محاسبه امتیاز نهایی (Score Calculation)
+        total_score = sum(
+            FILTER_WEIGHTS.get(f, {}).get("weight", 0) for f in all_satisfied_filters
+        )
+        
+        # 6. تعیین چشم‌انداز (Outlook)
+        if total_score >= 10 and len([f for f in all_satisfied_filters if FILTER_WEIGHTS.get(f, {}).get("weight", 0) > 0]) >= 4:
+            outlook = "Strong Buy"
+        elif total_score >= 5:
+            outlook = "Buy"
+        elif total_score >= 0:
+            outlook = "Neutral"
+        elif total_score >= -5:
+            outlook = "Sell"
+        else:
+            outlook = "Strong Sell"
+            
+        # 7. ساخت رشته دلایل (Reason String Construction)
+        positive_filters_reasons = []
+        negative_filters_reasons = []
+        
+        for filter_name in all_satisfied_filters:
+            weight = FILTER_WEIGHTS.get(filter_name, {}).get("weight", 0)
+            description = FILTER_WEIGHTS.get(filter_name, {}).get("description", "بدون توضیحات")
+            
+            if weight > 0:
+                positive_filters_reasons.append(f"✅ {filter_name} (+{weight}): {description}")
+            elif weight < 0:
+                negative_filters_reasons.append(f"❌ {filter_name} ({weight}): {description}")
+            else:
+                pass # weight 0 is ignored
 
-# --- Step 6: بازگرداندن پاسخ نهایی ---
-    return {
-        "top_watchlist_stocks": output_stocks,
-        "last_updated": jdate_str
-    }
-}
+        final_reasons_list = [
+            f"امتیاز نهایی: {total_score}",
+            f"چشم‌انداز بازار: {market_sentiment}",
+            "--- سیگنال‌های مثبت ---",
+        ] + positive_filters_reasons + [
+            "--- سیگنال‌های منفی (جریمه‌ها) ---",
+        ] + negative_filters_reasons + [
+            "--- توضیحات فنی تکمیلی ---",
+        ] + all_reasons["technical"] + all_reasons["market_condition"] + all_reasons["smart_money"] + all_reasons["power_thrust"] + all_reasons["static_levels"] + all_reasons["sector_strength"] + all_reasons["fundamental"] + all_reasons["ml_prediction"]
+        
+        # 💡 G-CleanUp: حذف دلایل تکراری و خالی
+        final_reasons_list = [r for r in final_reasons_list if r not in ["--- سیگنال‌های منفی (جریمه‌ها) ---", "--- توضیحات فنی تکمیلی ---"]]
+        final_reasons_list = list(dict.fromkeys(r for r in final_reasons_list if r.strip()))
+        
+        final_reason_string = "\n".join(final_reasons_list)
+
+        return SimpleNamespace(
+            symbol_id=symbol_id,
+            symbol_name=symbol_name,
+            outlook=outlook,
+            score=total_score,
+            reason=final_reason_string
+        )
+
+
+    def _save_result(self, result: SimpleNamespace):
+        """
+        ذخیره نتیجه آنالیز در جدول WeeklyWatchlistResult.
+        """
+        try:
+            # 💡 G-Check: جلوگیری از تکرار تحلیل در یک تاریخ
+            today_jdate = get_today_jdate_str()
+            
+            # جستجوی رکورد موجود برای امروز
+            existing_record = db.session.query(WeeklyWatchlistResult).filter(
+                WeeklyWatchlistResult.symbol_id == result.symbol_id,
+                WeeklyWatchlistResult.jentry_date == today_jdate,
+                WeeklyWatchlistResult.status == 'Open'
+            ).first()
+
+            if existing_record:
+                # 💡 G-Update: به روز رسانی رکورد موجود
+                existing_record.outlook = result.outlook
+                existing_record.score = result.score
+                existing_record.reason = result.reason
+                existing_record.entry_price = result.entry_price
+                existing_record.probability_percent = result.probability_percent
+                existing_record.updated_at = datetime.utcnow()
+                logger.info(f"Updated watchlist for {result.symbol_name} (Score: {result.score})")
+            else:
+                # 💡 G-Create: ایجاد رکورد جدید
+                new_result = WeeklyWatchlistResult(
+                    signal_unique_id=str(uuid.uuid4()),
+                    symbol_id=result.symbol_id,
+                    symbol_name=result.symbol_name,
+                    outlook=result.outlook,
+                    score=result.score,
+                    reason=result.reason,
+                    entry_price=result.entry_price,
+                    jentry_date=today_jdate,
+                    status='Open', # تمام سیگنال‌های هفتگی باز تلقی می‌شوند
+                    probability_percent=result.probability_percent # 💡 G-ML: اضافه شدن درصد احتمال
+                )
+                db.session.add(new_result)
+                logger.info(f"Added new watchlist signal for {result.symbol_name} (Score: {result.score})")
+                
+            db.session.commit()
+            return True
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error saving result for {result.symbol_name}: {e}")
+            return False
+
+    def _process_one_symbol(self, symbol_data_rec):
+        """
+        تابع بسته‌بندی برای پردازش یک نماد و مدیریت خطاها و لاگینگ.
+        """
+        # 💡 G-Fix: اضافه کردن قیمت ورود (Entry Price)
+        hist_df, _ = self._get_history_and_tech_data(symbol_data_rec.symbol_id, symbol_data_rec.symbol_name)
+        close_ser = _get_close_series_from_hist_df(hist_df)
+        entry_price = close_ser.iloc[-1] if not close_ser.empty else None
+        
+        # اگر قیمت امروز وجود ندارد، پردازش نکن
+        if entry_price is None:
+            logger.warning(f"Skipping {symbol_data_rec.symbol_name}: Could not determine entry price.")
+            return None
+
+        analysis_result = self._analyze_symbol(symbol_data_rec)
+        
+        if analysis_result is None:
+            return None
+
+        # 💡 G-Update: به‌روزرسانی شیء نتیجه با قیمت ورود و احتمال
+        analysis_result.entry_price = entry_price
+        # 💡 G-Fix: اطمینان از وجود فیلد probability_percent در ML
+        ml_prediction_reason = next((r for r in analysis_result.reason.split('\n') if "ML predicts uptrend" in r), None)
+        if ml_prediction_reason:
+            try:
+                prob_str = ml_prediction_reason.split('(Prob: ')[1].split('%')[0]
+                analysis_result.probability_percent = float(prob_str)
+            except:
+                analysis_result.probability_percent = None
+        else:
+            analysis_result.probability_percent = None
+
+        if analysis_result.outlook in ["Strong Buy", "Buy"]:
+            self._save_result(analysis_result)
+            return analysis_result
+        
+        return None
+
+    def run_watchlist_generation(self, parallel=True, max_workers=8):
+        """
+        فرایند اصلی تولید واچ لیست.
+        """
+        logger.info("Starting Weekly Watchlist Generation...")
+        start_time = time.time()
+        
+        # --- Step 1: واکشی لیست نمادها ---
+        try:
+            # 💡 G-Query: تنها نمادهای فعال با حداقل 50 روز داده را واکشی می‌کند.
+            # برای بهبود پرفورمنس، از subquery برای فیلتر کردن نمادهای بدون داده کافی استفاده می‌شود.
+            # اما برای سادگی، فعلا تمام نمادها را می‌خوانیم و در _get_history_and_tech_data فیلتر می‌کنیم.
+            active_symbols = db.session.query(ComprehensiveSymbolData).filter(
+                ComprehensiveSymbolData.is_active == True,
+                ComprehensiveSymbolData.symbol_type.in_(['Stock', 'ETF'])
+            ).all()
+            
+            # 💡 G-Fix: اطمینان از وجود symbol_id و symbol_name
+            active_symbols = [s for s in active_symbols if s.symbol_id and s.symbol_name]
+            
+            if not active_symbols:
+                logger.warning("No active symbols found in the database.")
+                return False
+                
+            logger.info(f"Found {len(active_symbols)} active symbols to analyze.")
+        
+        except Exception as e:
+            logger.error(f"Error fetching active symbols: {e}")
+            return False
+
+        # --- Step 2: پردازش موازی یا ترتیبی ---
+        
+        if parallel:
+            # 💡 G-Performance: استفاده از پردازش موازی
+            logger.info(f"Starting parallel processing with {max_workers} workers.")
+            
+            # 💡 FIX: Indentation error corrected (this was likely the main block indentation error)
+            # استفاده از joblib برای اجرای _process_one_symbol بر روی تمام نمادها
+            # توجه: Parallel باید با احتیاط استفاده شود تا بار زیادی به دیتابیس وارد نشود.
+            results = Parallel(n_jobs=max_workers, backend='multiprocessing', verbose=0)(
+                delayed(self._process_one_symbol)(symbol) for symbol in active_symbols
+            )
+            
+        else:
+            logger.info("Starting sequential processing.")
+            results = []
+            for symbol in active_symbols:
+                results.append(self._process_one_symbol(symbol))
+
+        # --- Step 3: جمع‌بندی نتایج ---
+        successful_results = [r for r in results if r is not None]
+        
+        logger.info(f"Completed Watchlist Generation. Found {len(successful_results)} strong signals.")
+        logger.info(f"Total time elapsed: {time.time() - start_time:.2f} seconds.")
+        
+        return successful_results
+
+    def get_latest_watchlist(self, limit=10, include_history=False):
+        """
+        بازگرداندن آخرین واچ لیست (سیگنال‌های 'Open' با بالاترین امتیاز).
+        """
+        logger.info(f"Fetching latest watchlist results (Limit: {limit}, Include History: {include_history})")
+        
+        # --- Step 1: تنظیم کوئری پایه ---
+        query = db.session.query(WeeklyWatchlistResult).order_by(
+            WeeklyWatchlistResult.score.desc(),
+            WeeklyWatchlistResult.jentry_date.desc()
+        ).limit(limit)
+
+        if not include_history:
+            # تنها سیگنال‌های فعال (Open) را برمی‌گرداند.
+            query = query.filter(WeeklyWatchlistResult.status == 'Open')
+
+        # --- Step 2: اجرای کوئری ---
+        try:
+            results = query.all()
+        except Exception as e:
+            logger.error(f"Error fetching latest watchlist: {e}")
+            return []
+
+        # --- Step 3: دریافت نام کامل شرکت‌ها ---
+        symbol_ids = [r.symbol_id for r in results]
+        company_name_map = {}
+        if symbol_ids:
+            company_name_records = db.session.query(
+                ComprehensiveSymbolData.symbol_id,
+                ComprehensiveSymbolData.company_name
+            ).filter(ComprehensiveSymbolData.symbol_id.in_(symbol_ids)).all()
+            
+            # 💡 FIX: Indentation error corrected
+            company_name_map = {sid: cname for sid, cname in company_name_records}
+
+        # --- Step 4: ساخت خروجی نهایی ---
+        # 💡 FIX: Indentation error corrected (whole block)
+        output_stocks = []
+        for r in results:
+            output_stocks.append({
+                "signal_unique_id": r.signal_unique_id,
+                "symbol_id": r.symbol_id,
+                "symbol_name": r.symbol_name,
+                "company_name": company_name_map.get(r.symbol_id, r.symbol_name),
+                "outlook": r.outlook,
+                "reason": r.reason,
+                "entry_price": r.entry_price,
+                "jentry_date": r.jentry_date,
+                "exit_price": r.exit_price,
+                "jexit_date": r.jexit_date,
+                "profit_loss_percentage": r.profit_loss_percentage,
+                "status": r.status,
+                "probability_percent": getattr(r, "probability_percent", None),
+                "score": getattr(r, "score", None)
+            })
+
+        # --- Step 5: مرتب‌سازی بر اساس امتیاز ---
+        # 💡 G-Fix: اطمینان از مرتب‌سازی حتی اگر score برابر با None باشد
+        output_stocks.sort(key=lambda x: x.get('score') if x.get('score') is not None else -100, reverse=True)
+
+        logger.info(f"Successfully retrieved {len(output_stocks)} watchlist results.")
+        return output_stocks
