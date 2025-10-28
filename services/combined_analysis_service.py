@@ -24,11 +24,11 @@ from services.weekly_watchlist_service import (
     _check_technical_filters,
     _check_market_condition_filters,
     _check_static_levels_filters,
-    _check_fundamental_filters,
-    _check_money_flow_and_advanced_ratios,
+    _check_simple_fundamental_filters,
+    #_check_money_flow_and_advanced_ratios,
     _check_smart_money_filters,
     _check_power_thrust_signal,
-    _check_candlestick_filters
+    #_check_candlestick_filters
 )
 # --- وارد کردن ابزارهای کمکی ---
 from services.technical_analysis_utils import get_today_jdate_str, convert_gregorian_to_jalali
@@ -157,7 +157,7 @@ def _calculate_processed_metrics(
 
     def run_check(check_func, *args):
         # بررسی اینکه تابع و آرگومان‌ها معتبر باشند
-        if not all(arg is not None for arg in args) and check_func not in [_check_candlestick_filters, _check_fundamental_filters]:
+        if not all(arg is not None for arg in args) and check_func not in [_check_simple_fundamental_filters]:
              return
         try:
             filters, reasons = check_func(*args)
@@ -179,11 +179,11 @@ def _calculate_processed_metrics(
     run_check(_check_technical_filters, hist_df, tech_df) # [cite: 177-181]
     run_check(_check_market_condition_filters, hist_df, tech_df) # [cite: 159-165]
     run_check(_check_static_levels_filters, technical_rec, entry_price) # [cite: 204-212]
-    run_check(_check_fundamental_filters, fundamental_rec) # [cite: 181-186]
-    run_check(_check_money_flow_and_advanced_ratios, hist_df, tech_df) # [cite: 196-201]
+    run_check(_check_simple_fundamental_filters, fundamental_rec) # [cite: 181-186]
+    #run_check(_check_money_flow_and_advanced_ratios, hist_df, tech_df) # [cite: 196-201]
     run_check(_check_smart_money_filters, hist_df) # [cite: 186-190]
     run_check(_check_power_thrust_signal, hist_df, last_close_series) # [cite: 190-195]
-    run_check(_check_candlestick_filters, pattern_rec) # [cite: 195-196]
+    #run_check(_check_candlestick_filters, pattern_rec) # [cite: 195-196]
     
     # --- مرحله ۲: محاسبه امتیازات بر اساس FILTER_WEIGHTS ---
     trend_score, value_score, flow_score, risk_penalty, total_score = 0, 0, 0, 0, 0
