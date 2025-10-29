@@ -15,7 +15,8 @@ from services.data_processing_and_analysis import run_technical_analysis, run_ca
 
 from services.ml_prediction_service import generate_and_save_predictions_for_watchlist, update_ml_prediction_outcomes
 
-from services.weekly_watchlist_service import run_weekly_watchlist_selection
+
+from services.weekly_watchlist_service import WeeklyWatchlistService
 from services.golden_key_service import run_golden_key_analysis_and_save
 from services.potential_buy_queues_service import run_potential_buy_queue_analysis_and_save
 
@@ -26,7 +27,7 @@ from services.sector_analysis_service import run_daily_sector_analysis
 
 from services.performance_service import run_weekly_performance_pipeline
 
-from services.data_fetcher import run_full_rebuild
+# (run_full_rebuild قبلاً ایمپورت شده بود، تکراری حذف شد)
 
 # ----------------- Logging Setup -----------------
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -130,6 +131,20 @@ def run_daily_analysis_flow(db_session: Session = None):
 
     logger.info("🎉 پایان موفقیت‌آمیز 'Daily Analysis Flow'.")
 
+# --- FIX 2: ایجاد تابع Wrapper برای جاب واچ‌لیست هفتگی ---
+@with_context_and_error_handling
+def run_weekly_watchlist_job():
+    """
+    تابع پوششی (Wrapper) برای اجرای جاب واچ‌لیست هفتگی.
+    این تابع دکوریتور with_context_and_error_handling را دارد،
+    بنابراین نیازی به تزریق db_session ندارد (کلاس خودش مدیریت می‌کند).
+    """
+    logger.info("🎬 شروع 'Weekly Watchlist Generation Job'...")
+    service_instance = WeeklyWatchlistService()
+    # اجرای موازی (parallel=True) به عنوان پیش‌فرض توصیه می‌شود
+    results = service_instance.run_watchlist_generation(parallel=True)
+    logger.info(f"🎉 'Weekly Watchlist Generation Job' completed. Found {len(results)} signals.")
+
 
 # ----------------- Job Definitions -----------------
 JOBS = [
@@ -142,7 +157,7 @@ JOBS = [
         "trigger": "cron",
         "day_of_week": "sat, sun, mon, tue, wed",
         "hour": 16,
-        "minute": 30
+        "minute": 3
     },
 
     # 2. شاخص بازار و تحلیل بخش‌ها
@@ -151,16 +166,16 @@ JOBS = [
         "func": store_market_indices_data,
         "trigger": "cron",
         "day_of_week": "sat, sun, mon, tue, wed",
-        "hour": 17,
-        "minute": 30
+        "hour": 16,
+        "minute": 50
     },
     {
         "id": "daily_sector_analysis_job",
         "func": run_daily_sector_analysis,
         "trigger": "cron",
         "day_of_week": "sat, sun, mon, tue, wed",
-        "hour": 17,
-        "minute": 37
+        "hour": 16,
+        "minute": 48
     },
 
     # 3. پیش‌بینی‌های ML
@@ -200,10 +215,9 @@ JOBS = [
     },
 
     # 🟡 وظایف هفتگی
- 
     {
         "id": "weekly_watchlist_selection_job",
-        "func": run_weekly_watchlist_selection,
+        "func": run_weekly_watchlist_job,
         "trigger": "cron",
         "day_of_week": "wed",
         "hour": 22,
@@ -223,22 +237,15 @@ JOBS = [
             "commit_batch_size": 100
         }
     },
-
-
-
-
-
     {
-    "id": "weekly_calculate_aggregated_performance_job",
-    "func": run_weekly_performance_pipeline,
-    "trigger": "cron",
-    "day_of_week": "thu",
-    "hour": 21,
-    "minute": 45,
-    "kwargs": {"period_type": "weekly"}
+        "id": "weekly_calculate_aggregated_performance_job",
+        "func": run_weekly_performance_pipeline,
+        "trigger": "cron",
+        "day_of_week": "thu",
+        "hour": 21,
+        "minute": 45,
+        "kwargs": {"period_type": "weekly"}
     },
-
-
 ]
 
 TIMEZONE = "Asia/Tehran"
@@ -251,12 +258,18 @@ def run_scheduler_app():
 
     scheduler.init_app(app)
 
+    # --- FIX 4: لیستی از جاب‌هایی که از قبل دکور شده‌اند ---
+    PRE_DECORATED_JOBS = {
+        "daily_analysis_flow_job",
+        "weekly_watchlist_selection_job"
+    }
+
     for job in JOBS:
         try:
             func_to_schedule = job["func"]
 
             # اگر تابع دکور نشده، دکوریتور را اضافه کن
-            if job["id"] != "daily_analysis_flow_job":
+            if job["id"] not in PRE_DECORATED_JOBS:
                 func_to_schedule = with_context_and_error_handling(job["func"])
 
             scheduler.add_job(
