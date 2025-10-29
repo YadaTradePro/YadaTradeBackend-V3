@@ -209,14 +209,19 @@ class AggregatedPerformance(db.Model):
         return f"<AggregatedPerformance {self.signal_source} {self.period_type} {self.report_date}>"
 
 class FundamentalData(db.Model):
+    """
+    مدل داده‌های فاندامنتال (هفتگی یا روزانه)، شامل داده‌های مالی و جریان سرمایه روزانه.
+    """
     __tablename__ = 'fundamental_data'
+    
     id = db.Column(db.Integer, primary_key=True)
     symbol_id = db.Column(
-        db.String(50), 
-        db.ForeignKey('comprehensive_symbol_data.symbol_id'), 
+        db.String(50),
+        db.ForeignKey('comprehensive_symbol_data.symbol_id'),
         nullable=False
     )
-    
+
+    # --- داده‌های فاندامنتال مالی ---
     eps = db.Column(db.Float)
     pe = db.Column(db.Float)
     group_pe_ratio = db.Column(db.Float)
@@ -225,11 +230,23 @@ class FundamentalData(db.Model):
     market_cap = db.Column(db.BigInteger)
     base_volume = db.Column(db.BigInteger)
     float_shares = db.Column(db.Float)
+
+    # --- داده‌های فاندامنتال روزانه (جریان سرمایه / سنتیمنت) ---
+    jdate = db.Column(db.String(10), nullable=True)  # تاریخ شمسی YYYY-MM-DD
+    date = db.Column(db.Date, nullable=True)         # تاریخ میلادی
+    real_power_ratio = db.Column(db.Float)           # نسبت قدرت خریدار حقیقی
+    volume_ratio_20d = db.Column(db.Float)           # نسبت حجم امروز به میانگین ۲۰ روزه
+    daily_liquidity = db.Column(db.Float)            # نقدینگی روزانه
+
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
 
+    __table_args__ = (
+        db.UniqueConstraint('symbol_id', 'jdate', name='_symbol_jdate_fund_uc'),
+    )
+
     def __repr__(self):
-        return f'<FundamentalData {self.symbol_id}>'
+        return f"<FundamentalData {self.symbol_id} - {self.jdate}>" 
 
 class SentimentData(db.Model):
     __tablename__ = 'sentiment_data'
@@ -457,6 +474,7 @@ class WeeklyWatchlistResult(db.Model):
     outlook = db.Column(db.String(255))
     reason = db.Column(db.Text)
     probability_percent = db.Column(db.Float)
+    score = db.Column(db.Float, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
 
