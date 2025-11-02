@@ -143,6 +143,7 @@ def determine_final_signal_status(profit_loss_percent: Optional[float]) -> str:
 def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, str]:
     """
     Runs the full three-phase performance pipeline for WeeklyWatchlistService:
+    Phase 0: Delete evaluated/expired records from WeeklyWatchlistResult (Clean up).
     Phase 1: Close ALL active WeeklyWatchlist signals (with 3-day data check) and mark as 'evaluated'.
     Phase 2: Create/Update SignalsPerformance records based on Phase 1 closures, setting final status (win/loss).
     Phase 3: Calculate and update AggregatedPerformance (weekly, monthly, annual).
@@ -151,6 +152,17 @@ def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, st
     logger.info(f"--- Starting Three-Phase Performance Pipeline for {signal_source} ---")
     
     try:
+        # --- PHASE 0: Clean up WeeklyWatchlistResult (DELETION LOGIC) ---
+        # اجرای منطق حذف: پاک کردن دیتای قبلی WeeklyWatchlistResult که ارزیابی شده است
+        
+        # ⬅️ تغییر کلیدی: حذف تمام رکوردهای ارزیابی شده (evaluated) و منقضی شده (expired)
+        deleted_count = db.session.query(WeeklyWatchlistResult).filter(
+            WeeklyWatchlistResult.status.in_(['evaluated', 'expired'])
+        ).delete(synchronize_session=False)
+        
+        logger.info(f"Phase 0 Complete: {deleted_count} records DELETED from WeeklyWatchlistResult (Status: evaluated/expired).")
+        # توجه: commit در انتهای تابع انجام می شود تا عملیات حذف با سایر تغییرات همزمان باشد
+
         # 1. Date Determination
         today_greg = jdatetime.date.today().togregorian()
         
@@ -199,7 +211,7 @@ def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, st
             # 1.3. Calculate P/L and Update WeeklyWatchlistResult
             profit_loss_percent = calculate_pnl_percent(entry_price, current_exit_price)
             
-            result.status = 'evaluated' # وضعیت موقت برای WeeklyWatchlistResult
+            result.status = 'evaluated' # وضعیت موقت برای WeeklyWatchlistResult (آماده برای حذف در دور بعد)
             result.exit_price = current_exit_price
             result.exit_date = exit_date_greg
             result.jexit_date = exit_jdate_str
@@ -212,7 +224,7 @@ def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, st
 
         logger.info(f"Phase 1 Complete: {closed_count} signals updated in WeeklyWatchlistResult to 'evaluated'.")
 
-        # --- PHASE 2: Update/Create SignalsPerformance Records ---
+        # --- PHASE 2: Update/Create SignalsPerformance Records (APPEND ONLY) ---
         
         sp_updated_count = 0
         sp_created_count = 0
@@ -267,7 +279,7 @@ def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, st
         logger.info(f"Phase 2 Complete: {sp_updated_count} records updated, {sp_created_count} records created in SignalsPerformance.")
 
 
-        # --- PHASE 3: Calculate and Update AggregatedPerformance ---
+        # --- PHASE 3: Calculate and Update AggregatedPerformance (DELETE/INSERT) ---
         
         report_date_str = get_today_jdate_str()
         
@@ -560,9 +572,9 @@ def get_detailed_signals_performance(status_filter: Optional[str] = None, period
     # Filter only closed signals unless an explicit status is requested
     if not status_filter:
          # ⬅️ اصلاح: فیلتر بر اساس وضعیت‌های نهایی
-          query = query.filter(
-              SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired'])
-          )
+         query = query.filter(
+             SignalsPerformance.status.in_(['closed_win', 'closed_loss', 'closed_neutral', 'closed_expired'])
+         )
 
     signals = query.order_by(SignalsPerformance.exit_date.desc(), SignalsPerformance.created_at.desc()).all()
 
