@@ -301,7 +301,7 @@ def _map_watchlist_result_to_dict(result_obj: 'SignalsPerformance') -> Dict[str,
     
     # 💡 تمام ستون‌های لازم را به صورت صریح از آبجکت استخراج می‌کنیم
     return {
-        'signal_unique_id': result_obj.signal_id, # 🚨 اصلاح شده: از signal_id استفاده می‌کند
+        'signal_unique_id': result_obj.signal_unique_id,
         'symbol_id': result_obj.symbol_id,
         'symbol_name': result_obj.symbol_name,
         'entry_price': float(result_obj.entry_price) if result_obj.entry_price is not None else None,
@@ -313,9 +313,8 @@ def _map_watchlist_result_to_dict(result_obj: 'SignalsPerformance') -> Dict[str,
         'reason': result_obj.reason,
         'exit_price': float(result_obj.exit_price) if result_obj.exit_price is not None else None,
         'jexit_date': result_obj.jexit_date,
-        # 🚨 اصلاح شده: از profit_loss_percent استفاده می‌کند
-        'profit_loss_percentage': float(result_obj.profit_loss_percent) if result_obj.profit_loss_percent is not None else None,
-        'probability_percent': float(result_obj.probability_percent) if result_obj.probability_percent is not None else None,
+        'profit_loss_percentage': float(result_obj.profit_loss_percentage) if result_obj.profit_loss_percentage is not None else None,
+        'probability_percent': float(result_obj.profit_loss_percentage) if result_obj.profit_loss_percentage is not None else None,
     }
 
 
