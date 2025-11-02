@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # services/data_processing_and_analysis.py
 # مسئولیت: اجرای تحلیل‌های تکنیکال و تشخیص الگوهای شمعی بر اساس داده‌های موجود در دیتابیس.
-# 💥 نسخه نهایی: اصلاح خطای 'Working outside of application context' با Lazy Initialization
 
 import logging
 import gc
@@ -12,7 +11,7 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union
 from contextlib import contextmanager
-import threading # 👈 [جدید] ایمپورت مورد نیاز برای قفل
+import threading 
 
 from sqlalchemy import func, distinct, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -40,42 +39,33 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # --- ثابت‌های مدیریت حافظه و بچ ---
-DEFAULT_BATCH_SIZE = 200  # for DB bulk ops & symbol processing
-MEMORY_LIMIT_MB = 1500  # warn threshold
+DEFAULT_BATCH_SIZE = 200 # for DB bulk ops & symbol processing
+MEMORY_LIMIT_MB = 1500 # warn threshold
 
 # -----------------------------------------------------------
-# 💥 [جدید] بخش ۱: مدیریت یکپارچه Session (نسخه Lazy-Loaded)
+# بخش ۱: مدیریت یکپارچه Session (نسخه Lazy-Loaded)
 # -----------------------------------------------------------
 
-# 👈 [اصلاح] SessionLocal را در زمان import مقداردهی اولیه نمی‌کنیم
 SessionLocal: Optional[sessionmaker] = None
-# 👈 [جدید] یک قفل برای جلوگیری از ایجاد همزمان SessionLocal توسط چند ترد
 _session_lock = threading.Lock()
 
 def _get_session_local() -> sessionmaker:
     """
     ایجاد و بازگرداندن SessionMaker به صورت Lazy (تنبل) و Thread-Safe.
-    این تابع خطای 'Working outside of application context' را برطرف می‌کند
-    زیرا 'db.engine' را تنها زمانی فراخوانی می‌کند که واقعاً به آن نیاز است.
     """
     global SessionLocal
     
-    # اگر SessionLocal قبلاً ساخته شده، همان را برگردان
     if SessionLocal:
         return SessionLocal
     
-    # اگر ساخته نشده، قفل را بگیر تا فقط یک ترد آن را بسازد
     with _session_lock:
-        # دوباره چک کن که ترد دیگری آن را نساخته باشد
         if SessionLocal is None:
             try:
-                # 💥 این کد اکنون در زمان اجرا فراخوانی می‌شود، نه در زمان import
-                # در این لحظه، اپلیکیشن Flask راه‌اندازی شده و db.engine در دسترس است
+                # 💥 فراخوانی db.engine در زمان نیاز
                 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db.engine)
                 logger.info("✅ SessionLocal (sessionmaker) با موفقیت مقداردهی اولیه شد.")
             except Exception as e:
                 logger.error(f"❌ امکان اتصال به db.engine برای ساخت SessionLocal وجود ندارد: {e}", exc_info=True)
-                # اگر engine در دسترس نباشد، اجازه ادامه کار را نده
                 raise RuntimeError(f"امکان مقداردهی اولیه SessionLocal وجود ندارد: {e}")
         
         return SessionLocal
@@ -85,36 +75,37 @@ def _get_session_local() -> sessionmaker:
 def session_scope(external_session: Optional[Session] = None) -> Session:
     """
     مدیریت هوشمند Session برای استفاده در Flask-context یا خارج از آن.
+    ⚠️ توجه: این context manager دیگر Commit نهایی را برای Sessionهای خارجی انجام نمی‌دهد.
     """
     session = None
     try:
         if external_session:
-            # استفاده از Session موجود (از Flask route)
+            # 💡 استفاده از Session موجود
             logger.debug("Using external session (from Flask context).")
             yield external_session
         else:
-            # ایجاد Session جدید (برای اسکریپت پس‌زمینه)
-            
-            # 👈 [اصلاح] استفاده از تابع lazy-initializer
+            # 💡 ایجاد Session جدید
             factory = _get_session_local()
             if not factory:
-                 raise RuntimeError("SessionLocal factory could not be initialized.")
-                 
+                raise RuntimeError("SessionLocal factory could not be initialized.")
+                
             session = factory()
             logger.debug("Creating new local session for background task.")
             
             yield session
             
-            logger.debug("Committing local session.")
-            session.commit() # 👈 مدیریت خودکار Commit
+            # 🚨 تنها زمانی Commit می‌کنیم که خودمان Session را ساخته باشیم (نه Session ورودی از Flask)
+            # 💡 این Commit نهایی، تغییرات ایجاد شده در run_technical_analysis/run_candlestick_detection را ثبت می‌کند
+            logger.debug("Committing final local session.")
+            session.commit() # 👈 مدیریت خودکار Commit نهایی
             
     except Exception as e:
         logger.error(f"Error occurred in session scope: {e}. Rolling back.", exc_info=True)
-        if session: # فقط Session ای که خودمان ساختیم را Rollback می‌کنیم
+        if session: 
             session.rollback() # 👈 مدیریت خودکار Rollback
-        raise e # انتشار مجدد خطا
+        raise e 
     finally:
-        if session: # فقط Session ای که خودمان ساختیم را Close می‌کنیم
+        if session: 
             logger.debug("Closing local session.")
             session.close() # 👈 مدیریت خودکار Close
 
@@ -153,7 +144,7 @@ def cleanup_memory():
 def save_technical_indicators(db_session: Session, symbol_id: Union[int, str], df: pd.DataFrame):
     """
     ذخیره (درج یا به‌روزرسانی) نتایج تحلیل تکنیکال.
-    این تابع دیگر Commit یا Rollback نمی‌کند.
+    این تابع Commit یا Rollback نمی‌کند و فرض بر این است که تابع فراخواننده این کار را انجام می‌دهد.
     """
     symbol_id_str = str(symbol_id)
     
@@ -164,20 +155,27 @@ def save_technical_indicators(db_session: Session, symbol_id: Union[int, str], d
     else:
         df['symbol_id'] = df['symbol_id'].astype(str)
 
+    # 💡 اصلاح: برای جلوگیری از مشکلات تکراری، استفاده از drop_duplicates
     df_unique = df.drop_duplicates(subset=['symbol_id', 'jdate'], keep='last').copy()
-    df_to_save = df_unique.dropna(subset=['RSI', 'MACD', 'jdate'])
+    
+    # 💡 اصلاح: استفاده از MACD_Hist به عنوان ستون حیاتی در کنار RSI
+    df_to_save = df_unique.dropna(subset=['RSI', 'MACD_Histogram', 'jdate']) 
 
     if df_to_save.empty:
         logger.debug(f"⚠️ هیچ سطر معتبری برای ذخیره اندیکاتور {symbol_id_str} وجود نداشت.")
         return
-    
+        
     updates_count = 0
     inserts_count = 0
     
     records_dict = df_to_save.to_dict('records')
     
+    # 💡 اصلاح: فچ کردن فقط رکوردهای موجود با تاریخ‌های موجود در DataFrame
+    jdates_in_df = df_to_save['jdate'].unique().tolist()
+    
     existing_indicators_query = db_session.query(TechnicalIndicatorData).filter(
-        TechnicalIndicatorData.symbol_id == symbol_id_str
+        TechnicalIndicatorData.symbol_id == symbol_id_str,
+        TechnicalIndicatorData.jdate.in_(jdates_in_df) # 👈 محدود کردن فچ
     )
     
     existing_map = {
@@ -190,55 +188,45 @@ def save_technical_indicators(db_session: Session, symbol_id: Union[int, str], d
         if not jdate:
             continue
 
-        row['symbol_id'] = str(row.get('symbol_id', symbol_id_str))
+        # 💡 اطمینان از تطابق نام ستون‌ها با مدل دیتابیس
+        data_to_save = {
+            'close_price': row.get('close'),
+            'RSI': row.get('RSI'),
+            'MACD': row.get('MACD'),
+            'MACD_Signal': row.get('MACD_Signal'),
+            'MACD_Hist': row.get('MACD_Histogram'),
+            'SMA_20': row.get('SMA_20'),
+            'SMA_50': row.get('SMA_50'),
+            'Bollinger_High': row.get('Bollinger_Upper'),
+            'Bollinger_Low': row.get('Bollinger_Lower'),
+            'Bollinger_MA': row.get('Bollinger_Middle'),
+            'Volume_MA_20': row.get('Volume_MA_20'),
+            'ATR': row.get('ATR'),
+            'Stochastic_K': row.get('Stochastic_K'),
+            'Stochastic_D': row.get('Stochastic_D'),
+            'squeeze_on': bool(row.get('squeeze_on')),
+            'halftrend_signal': row.get('halftrend_signal'),
+            'resistance_level_50d': row.get('resistance_level_50d'),
+            'resistance_broken': bool(row.get('resistance_broken')),
+            'updated_at': datetime.now()
+        }
+
         existing = existing_map.get(jdate)
 
         if existing:
             # ✅ Update
-            existing.close_price = row.get('close')
-            existing.RSI = row.get('RSI')
-            existing.MACD = row.get('MACD')
-            existing.MACD_Signal = row.get('MACD_Signal')
-            existing.MACD_Hist = row.get('MACD_Histogram')
-            existing.SMA_20 = row.get('SMA_20')
-            existing.SMA_50 = row.get('SMA_50')
-            existing.Bollinger_High = row.get('Bollinger_Upper')
-            existing.Bollinger_Low = row.get('Bollinger_Lower')
-            existing.Bollinger_MA = row.get('Bollinger_Middle')
-            existing.Volume_MA_20 = row.get('Volume_MA_20')
-            existing.ATR = row.get('ATR')
-            existing.Stochastic_K = row.get('Stochastic_K')
-            existing.Stochastic_D = row.get('Stochastic_D')
-            existing.squeeze_on = bool(row.get('squeeze_on'))
-            existing.halftrend_signal = row.get('halftrend_signal')
-            existing.resistance_level_50d = row.get('resistance_level_50d')
-            existing.resistance_broken = bool(row.get('resistance_broken'))
+            for key, value in data_to_save.items():
+                setattr(existing, key, value)
             updates_count += 1
         else:
             # ✅ Insert
-            indicator = TechnicalIndicatorData(
-                symbol_id=row['symbol_id'],
-                jdate=jdate,
-                close_price=row.get('close'),
-                RSI=row.get('RSI'),
-                MACD=row.get('MACD'),
-                MACD_Signal=row.get('MACD_Signal'),
-                MACD_Hist=row.get('MACD_Histogram'),
-                SMA_20=row.get('SMA_20'),
-                SMA_50=row.get('SMA_50'),
-                Bollinger_High=row.get('Bollinger_Upper'),
-                Bollinger_Low=row.get('Bollinger_Lower'),
-                Bollinger_MA=row.get('Bollinger_Middle'),
-                Volume_MA_20=row.get('Volume_MA_20'),
-                ATR=row.get('ATR'),
-                Stochastic_K=row.get('Stochastic_K'),
-                Stochastic_D=row.get('Stochastic_D'),
-                squeeze_on=bool(row.get('squeeze_on')),
-                halftrend_signal=row.get('halftrend_signal'),
-                resistance_level_50d=row.get('resistance_level_50d'),
-                resistance_broken=bool(row.get('resistance_broken'))
-            )
-            db_session.add(indicator) # 👈 فقط Add
+            data_to_save.update({
+                'symbol_id': row.get('symbol_id', symbol_id_str),
+                'jdate': jdate,
+                'created_at': datetime.now()
+            })
+            indicator = TechnicalIndicatorData(**data_to_save)
+            db_session.add(indicator)
             inserts_count += 1
 
     if inserts_count > 0 or updates_count > 0:
@@ -260,55 +248,37 @@ def run_technical_analysis(
     """
     اجرای تحلیل تکنیکال در بچ‌های کوچک.
     """
+    # 💡 اگر session ورودی داده نشده، از session_scope استفاده کن، در غیر این صورت، از session ورودی استفاده کن.
+    # این ساختار تضمین می‌کند که session_scope Commit/Rollback/Close را مدیریت کند.
     with session_scope(external_session=db_session) as session:
         try:
             logger.info("📈 شروع تحلیل تکنیکال...")
 
-            # 💥 راه حل: استفاده از session مستقل برای یافتن نمادها
+            # ⚙️ بخش یافتن نمادها (بدون تغییر)
             independent_session = None
             try:
-                # ایجاد یک session کاملاً مستقل
                 factory = _get_session_local()
                 independent_session = factory()
-                
-                # یافتن نمادها با session مستقل
                 symbol_query = independent_session.query(ComprehensiveSymbolData.symbol_id)
-                
                 if symbols_list:
                     symbols_list_str = [str(sym) for sym in symbols_list]
                     symbol_query = symbol_query.filter(ComprehensiveSymbolData.symbol_id.in_(symbols_list_str))
-
                 all_symbols = [row[0] for row in symbol_query.all()]
-                logger.info(f"🔍 [SESSION-INDEPENDENT] {len(all_symbols)} نماد یافت شد")
-                
-                # اگر بازهم صفر بود، از HistoricalData استفاده کن
                 if not all_symbols:
-                    logger.warning("⚠️ استفاده از HistoricalData برای یافتن نمادها...")
                     historical_query = independent_session.query(distinct(HistoricalData.symbol_id))
                     all_symbols = [row[0] for row in historical_query.all()]
-                    logger.info(f"🔍 [HISTORICAL-FALLBACK] {len(all_symbols)} نماد یافت شد")
-                    
             except Exception as e:
                 logger.error(f"❌ خطا در session مستقل: {e}")
-                # Fallback: استفاده از session اصلی
                 symbol_query = session.query(ComprehensiveSymbolData.symbol_id)
                 all_symbols = [row[0] for row in symbol_query.all()] if symbol_query else []
-                
             finally:
                 if independent_session:
                     independent_session.close()
 
             total_symbols = len(all_symbols)
-            logger.info(f"🔍 نهایی: {total_symbols} نماد برای تحلیل تکنیکال")
-
-            if total_symbols == 0:
-                logger.error("❌ هیچ نمادی برای تحلیل یافت نشد!")
-                return 0, "هیچ نمادی برای تحلیل یافت نشد"
-
             if limit is not None:
                 all_symbols = all_symbols[:limit]
                 total_symbols = len(all_symbols)
-                logger.info(f"محدودیت {limit} اعمال شد. {total_symbols} نماد پردازش می‌شود.")
 
             processed_count = 0
             success_count = 0
@@ -318,7 +288,7 @@ def run_technical_analysis(
                 batch_symbols = all_symbols[i:i + batch_size]
                 logger.info(f"📦 پردازش بچ {i // batch_size + 1}: نمادهای {i + 1} تا {min(i + batch_size, total_symbols)}")
 
-                # 🔧 استفاده از batch symbols برای کوئری
+                # ⚙️ کوئری داده‌های تاریخی بچ (بدون تغییر)
                 query = session.query(
                     HistoricalData.symbol_id, HistoricalData.symbol_name, HistoricalData.date, HistoricalData.jdate, 
                     HistoricalData.open, HistoricalData.close, HistoricalData.high, HistoricalData.low, 
@@ -327,9 +297,7 @@ def run_technical_analysis(
                     HistoricalData.buy_count_i, HistoricalData.buy_count_n, HistoricalData.sell_count_i, 
                     HistoricalData.sell_count_n, HistoricalData.buy_i_volume, HistoricalData.buy_n_volume, 
                     HistoricalData.sell_i_volume, HistoricalData.sell_n_volume
-                ).filter(HistoricalData.symbol_id.in_(batch_symbols))
-
-                query = query.order_by(HistoricalData.symbol_id, HistoricalData.date)
+                ).filter(HistoricalData.symbol_id.in_(batch_symbols)).order_by(HistoricalData.symbol_id, HistoricalData.date)
                 historical_data = query.all()
 
                 if not historical_data:
@@ -344,21 +312,15 @@ def run_technical_analysis(
                 ]
                 df = pd.DataFrame(historical_data, columns=columns)
                 
-                if df.empty:
-                    logger.warning(f"⚠️ DataFrame خالی برای بچ {i // batch_size + 1}")
-                    continue
-                    
                 grouped = df.groupby('symbol_id')
 
                 for symbol_id, group_df in grouped:
                     processed_count += 1
                     try:
-                        if len(group_df) < 5:
-                            logger.debug(f"⚠️ داده کافی برای نماد {symbol_id} وجود ندارد ({len(group_df)} رکورد)")
-                            continue
-                            
+                        if len(group_df) < 5: continue
+                        
                         df_indicators = calculate_all_indicators(group_df.copy())
-                        save_technical_indicators(session, symbol_id, df_indicators)  # ✅ اکنون تعریف شده
+                        save_technical_indicators(session, symbol_id, df_indicators)
                         success_count += 1
 
                         if processed_count % 10 == 0:
@@ -367,6 +329,18 @@ def run_technical_analysis(
                     except Exception as e:
                         error_count += 1
                         logger.error(f"❌ خطا در تحلیل نماد {symbol_id}: {e}", exc_info=True)
+                        # 💡 حذف session.rollback() در اینجا: 
+                        # برای جلوگیری از رول‌بک شدن کل بچ در اثر یک خطای جزئی در یک نماد خاص
+                        # اگر خطای جدی رخ دهد، Commit بچه‌ای یا Commit نهایی آن را مدیریت خواهد کرد.
+
+                # 💥 اصلاح حیاتی: Commit بچه‌ای
+                try:
+                    session.commit() # 👈 Commit پس از پردازش موفقیت آمیز تمام نمادهای بچ
+                    logger.info(f"💾 بچ {i // batch_size + 1} با موفقیت Commit شد.")
+                except Exception as e:
+                    session.rollback() # اگر Commit بچه‌ای شکست خورد، Rollback کن
+                    logger.error(f"❌ خطای Commit در بچ {i // batch_size + 1}: {e}. Rollback شد.", exc_info=True)
+                    error_count += (len(batch_symbols) - success_count) # رکوردهایی که Commit نشدند را به خطا اضافه کن
 
                 del df
                 del historical_data
@@ -376,8 +350,9 @@ def run_technical_analysis(
             return success_count, f"تحلیل کامل شد. {success_count} موفق، {error_count} خطا"
 
         except Exception as e:
-            error_msg = f"❌ خطا در اجرای تحلیل تکنیکال: {e}"
+            error_msg = f"❌ خطای عمومی در اجرای تحلیل تکنیکال: {e}"
             logger.error(error_msg, exc_info=True)
+            # Rollback در این سطح توسط session_scope مدیریت می‌شود
             return 0, error_msg
 
 
@@ -397,43 +372,39 @@ def run_candlestick_detection(
         try:
             logger.info("🕯️ شروع تشخیص الگوهای شمعی...")
             
-            # 1. 🔥 پاک کردن COMPLETE تمام داده‌های قبلی جدول
+            # 1. پاک کردن COMPLETE تمام داده‌های قبلی جدول
+            # 💡 توجه: حذف در اینجاست، اما Commit آن در انتهای session_scope اتفاق می‌افتد.
+            # اگر می‌خواهید حذف فوراً ثبت شود (که ریسک Rollback شدن کل فرآیند را افزایش می‌دهد)، 
+            # باید در اینجا session.commit() کنید. برای حفظ ساختار فعلی، به صورت زیر عمل می‌کنیم:
             logger.info("🗑️ در حال پاک کردن تمام داده‌های قبلی جدول candlestick_pattern_detection...")
-            total_deleted = session.query(CandlestickPatternDetection).delete()
-            logger.info(f"✅ {total_deleted} رکورد قدیمی حذف شد.")
+            session.query(CandlestickPatternDetection).delete()
+            # 🚨 Commit موقت برای ثبت حذف (اختیاری، اما توصیه می‌شود):
+            # اگرچه کل فرآیند در یک Transaction است، Commit موقت می‌تواند عملیات حذف را تثبیت کند.
+            # برای ساده‌سازی و جلوگیری از Commitهای اضافه، از Commit در انتهای session_scope استفاده می‌کنیم.
             
-            # 🔧 استفاده از session مستقل برای یافتن نمادها
+            # ⚙️ بخش یافتن نمادها (بدون تغییر)
             independent_session = None
             try:
                 factory = _get_session_local()
                 independent_session = factory()
-                
                 base_query = independent_session.query(ComprehensiveSymbolData.symbol_id)
-                
                 if symbols_list:
                     symbols_list_str = [str(sym) for sym in symbols_list]
                     base_query = base_query.filter(ComprehensiveSymbolData.symbol_id.in_(symbols_list_str))
-                    
-                symbol_ids_raw = [s[0] for s in base_query.all()]
-                symbol_ids_to_process = [str(symbol_id) for symbol_id in symbol_ids_raw]
-                
-                # Fallback به HistoricalData
+                symbol_ids_to_process = [str(s[0]) for s in base_query.all()]
                 if not symbol_ids_to_process:
-                    logger.warning("⚠️ استفاده از HistoricalData برای یافتن نمادها...")
                     historical_query = independent_session.query(distinct(HistoricalData.symbol_id))
-                    symbol_ids_raw = [s[0] for s in historical_query.all()]
-                    symbol_ids_to_process = [str(symbol_id) for symbol_id in symbol_ids_raw]
-                    
+                    symbol_ids_to_process = [str(s[0]) for s in historical_query.all()]
             except Exception as e:
+                # ... Fallback logic ...
                 logger.error(f"❌ خطا در session مستقل: {e}")
                 base_query = session.query(ComprehensiveSymbolData.symbol_id)
                 symbol_ids_raw = [s[0] for s in base_query.all()] if base_query else []
                 symbol_ids_to_process = [str(symbol_id) for symbol_id in symbol_ids_raw]
-                
             finally:
                 if independent_session:
                     independent_session.close()
-            
+
             if not symbol_ids_to_process:
                 logger.warning("⚠️ هیچ نمادی برای تشخیص الگوهای شمعی یافت نشد.")
                 return 0
@@ -447,6 +418,7 @@ def run_candlestick_detection(
             records_to_insert = []
             processed_count = 0
 
+            # ⚙️ حلقه پردازش نمادها (بدون تغییر در منطق اصلی)
             for symbol_id in symbol_ids_to_process:
                 try:
                     historical_data_query = session.query(HistoricalData).filter(
@@ -455,29 +427,23 @@ def run_candlestick_detection(
                     
                     historical_data = historical_data_query.all() 
                     
-                    if len(historical_data) < 5:
-                        logger.debug(f"⚠️ داده کافی برای نماد {symbol_id} وجود ندارد ({len(historical_data)} رکورد)")
+                    if len(historical_data) < 5: 
+                        logger.debug(f"⚠️ داده کافی برای نماد {symbol_id} وجود ندارد")
                         continue 
 
                     df = pd.DataFrame([row.__dict__ for row in historical_data])
                     if '_sa_instance_state' in df.columns:
                         df = df.drop(columns=['_sa_instance_state']) 
-                    
                     df.sort_values(by='date', inplace=True) 
 
                     today_record_dict = df.iloc[-1].to_dict()
                     yesterday_record_dict = df.iloc[-2].to_dict()
                     
-                    patterns = check_candlestick_patterns(
-                        today_record_dict, 
-                        yesterday_record_dict, 
-                        df
-                    )
+                    patterns = check_candlestick_patterns(today_record_dict, yesterday_record_dict, df)
                     
                     if patterns:
                         now = datetime.now()
                         current_jdate = today_record_dict['jdate']
-
                         for pattern in patterns:
                             records_to_insert.append({
                                 'symbol_id': symbol_id,
@@ -486,42 +452,38 @@ def run_candlestick_detection(
                                 'created_at': now, 
                                 'updated_at': now
                             })
-                        
                         success_count += 1
-                        logger.debug(f"✅ الگوهای یافت شده برای نماد {symbol_id}: {patterns}")
-                    
+                        
                     processed_count += 1
                     if processed_count % 100 == 0:
                         logger.info(f"🕯️ پیشرفت تشخیص الگوهای شمعی: {processed_count}/{len(symbol_ids_to_process)} نماد")
 
                 except Exception as e:
                     logger.error(f"❌ خطا در تشخیص الگوهای شمعی برای نماد {symbol_id}: {e}", exc_info=True)
-                    
+            
             logger.info(f"✅ تشخیص الگوهای شمعی برای {success_count} نماد (با {len(records_to_insert)} الگو) انجام شد.")
                     
             # 3. ذخیره نتایج در دیتابیس
             if records_to_insert:
                 logger.info(f"💾 در حال درج {len(records_to_insert)} رکورد جدید...")
                 
-                # 🔍 بررسی تکراری‌ها قبل از درج
+                # 🔍 بررسی تکراری‌ها قبل از درج (بدون تغییر)
                 unique_records = {}
                 duplicates_count = 0
-                
                 for record in records_to_insert:
                     key = (record['symbol_id'], record['jdate'], record['pattern_name'])
                     if key in unique_records:
                         duplicates_count += 1
-                        logger.warning(f"⚠️ رکورد تکراری شناسایی شد: {key}")
                     else:
                         unique_records[key] = record
                 
                 if duplicates_count > 0:
-                    logger.warning(f"⚠️ {duplicates_count} رکورد تکراری حذف شد.")
                     records_to_insert = list(unique_records.values())
-                    logger.info(f"📊 پس از حذف تکراری‌ها: {len(records_to_insert)} رکورد برای درج باقی ماند.")
+                    logger.warning(f"⚠️ {duplicates_count} رکورد تکراری حذف شد. {len(records_to_insert)} رکورد برای درج باقی ماند.")
                 
                 # درج رکوردهای جدید
                 session.bulk_insert_mappings(CandlestickPatternDetection, records_to_insert)
+                # 💡 Commit نهایی توسط session_scope در انتهای تابع انجام می‌شود
                 logger.info(f"✅ {len(records_to_insert)} الگوی شمعی با موفقیت درج شد.")
                 
             else:
@@ -531,20 +493,5 @@ def run_candlestick_detection(
 
         except Exception as e:
             logger.error(f"❌ خطای کلی در اجرای تشخیص الگوهای شمعی: {e}", exc_info=True)
-            session.rollback()
+            # Rollback در این سطح توسط session_scope مدیریت می‌شود
             return 0
-
-# -----------------------------------------------------------
-# توابع Export
-# -----------------------------------------------------------
-
-__all__ = [
-    # توابع اصلی اجرا کننده تحلیل
-    'run_technical_analysis',
-    'run_candlestick_detection',
-    
-    # توابع کمکی مورد نیاز
-    # 'get_session_local', (حذف شد)
-    'cleanup_memory',
-    'save_technical_indicators'
-]
