@@ -183,7 +183,7 @@ def run_weekly_performance_pipeline(days_to_lookback: int = 7) -> Tuple[bool, st
         
         # انتخاب تمام سیگنال‌های فعال (بدون محدودیت تاریخ ورود)
         active_results = WeeklyWatchlistResult.query.filter(
-            WeeklyWatchlistResult.status == 'active',
+            WeeklyWatchlistResult.status == 'Open',
             # شرط محدودکننده تاریخ ورود حذف شد
         ).all()
         
