@@ -33,7 +33,7 @@ from services.technical_analysis_utils import (
     get_today_jdate_str, normalize_value, calculate_rsi, 
     calculate_macd, calculate_sma, calculate_bollinger_bands, 
     calculate_volume_ma, calculate_atr, calculate_smart_money_flow, 
-    convert_gregorian_to_jalali, calculate_z_score
+    convert_gregorian_to_jalali, calculate_z_score, calculate_static_support
 )
 
 # تنظیمات لاگینگ برای این ماژول
@@ -76,9 +76,9 @@ FILTER_WEIGHTS = {
         "weight": 3,
         "description": "سهم در فاز تراکم و نوسان کم قرار دارد و آماده یک حرکت قوی (شکست) است."
     },
-    "Near_Static_Support": {
-        "weight": 3,
-        "description": "قیمت در نزدیکی یک سطح حمایتی استاتیک معتبر قرار دارد که ریسک به ریوارد مناسبی برای ورود فراهم می‌کند."
+    "Near_Major_Static_Support": {
+        "weight": 5, 
+        "description": "نزدیکی به حمایت اصلی: قیمت در محدوده 0% تا 3% بالای سطح حمایت استاتیک کلیدی قرار دارد (ورود با ریسک کم)."
     },
     "Bollinger_Lower_Band_Touch": {
         "weight": 1,
@@ -137,7 +137,7 @@ FILTER_WEIGHTS = {
 
     # --- Penalties & Negative Scores (Crucial for avoiding peaks) ---
     "Price_Below_SMA200": { # 💡 G-Trend: فیلتر جدید روند بلندمدت
-        "weight": -5,
+        "weight": -7,
         "description": "جریمه روند بلندمدت: قیمت پایین‌تر از میانگین متحرک ۲۰۰ روزه است."
     },
     "Strong_Downtrend_Confirmed": {
@@ -145,24 +145,28 @@ FILTER_WEIGHTS = {
         "description": "جریمه روند نزولی: SMA_20 پایین‌تر از SMA_50 قرار دارد."
     },
     "MACD_Negative_Divergence": {
-        "weight": -4,
+        "weight": -6,
         "description": "جریمه واگرایی منفی: قیمت سقف جدید زده اما MACD سقف پایین‌تری ثبت کرده (نشانه ضعف شدید روند)."
     },
     "RSI_Is_Overbought": {
-        "weight": -4,
+        "weight": -8,
         "description": "جریمه اشباع خرید: RSI در ناحیه اشباع خرید قرار دارد که ریسک اصلاح قیمت را افزایش می‌دهد."
     },
     "Price_Too_Stretched_From_SMA50": {
-        "weight": -3,
+        "weight": -5,
         "description": "جریمه فاصله زیاد: قیمت فاصله زیادی از میانگین متحرک ۵۰ روزه گرفته که احتمال بازگشت به میانگین را بالا می‌برد."
     },
     "Negative_Real_Money_Flow_Trend_10D": {
-        "weight": -2,
+        "weight": -3,
         "description": "جریمه خروج پول: برآیند ورود پول هوشمند در ۱۰ روز گذشته منفی بوده است (خروج پول)."
     },
     "Signal_Against_Market_Trend": {
         "weight": -2,
         "description": "جریمه خلاف جهت بازار: سیگنال صعودی (مثل MACD Cross) در یک بازار خرسی صادر شده است."
+    },
+    "Break_Below_Static_Support": { 
+        "weight": -8, 
+        "description": "شکست حمایت اصلی: قیمت به زیر سطح حمایت استاتیک کلیدی سقوط کرده که نشانه ضعف شدید یا تغییر روند است."
     }
 }
 
@@ -291,7 +295,7 @@ def _check_market_condition_filters(hist_df, tech_df):
         is_uptrend = sma20 > sma50
 
         # 💡 G-2: جریمه فاصله زیاد (شرط 
-        if stretch_percent > 20:
+        if stretch_percent > 15:
             satisfied_filters.append("Price_Too_Stretched_From_SMA50")
             reason_parts["market_condition"].append(
                 f"Price is overextended ({stretch_percent:.1f}%) from SMA50."
@@ -768,38 +772,42 @@ def _check_sector_strength_filter(symbol_sector, leading_sectors):
         reason_parts["sector_strength"].append(f"Symbol is in a leading sector: {symbol_sector}.")
     return satisfied_filters, reason_parts
 
-def _check_static_levels_filters(technical_rec, last_close_val):
+def _check_static_levels_filters(hist_df: pd.DataFrame, technical_rec: pd.Series, last_close_val: float) -> Tuple[List[str], Dict[str, List[str]]]:
     """ 
-    Checks for proximity to static support or breakout of static resistance.
-    This assumes 'static_support_level' and 'static_resistance_level' fields are pre-calculated and 
-    available in the TechnicalIndicatorData record.
+    تلفیق منطق: محاسبه دینامیک حمایت استاتیک و بررسی مقاومت استاتیک از پیش محاسبه شده.
     """
     satisfied_filters, reason_parts = [], {"static_levels": []}
-    is_rec_valid = technical_rec is not None and (
-        not isinstance(technical_rec, pd.Series) or not technical_rec.empty
-    )
 
-    if not is_rec_valid:
-        return satisfied_filters, reason_parts
+    # --- A. محاسبه دینامیک حمایت استاتیک --- (منطق جدید)
+    # این تابع را فرض می‌کنیم که با DataFrame کار می‌کند
+    MAJOR_STATIC_SUPPORT = calculate_static_support(hist_df, lookback_period=120)
 
-    # --- Static Support Proximity ---
-    static_support = _get_attr_safe(technical_rec, 'static_support_level')
-    if static_support is not None and static_support > 0:
-        # اگر قیمت بین 0 تا 3 درصد بالای حمایت باشد
-        distance_from_support = ((last_close_val - static_support) / static_support) * 100
-        if 0 <= distance_from_support <= 3:
-            satisfied_filters.append("Near_Static_Support")
-            reason_parts["static_levels"].append(f"Price is near static support ({static_support:,.0f}, {distance_from_support:.1f}% above).")
+    if MAJOR_STATIC_SUPPORT is not None:
+        reason_parts["static_levels"].append(f"حمایت استاتیک اصلی شناسایی شده: {MAJOR_STATIC_SUPPORT:,.0f}")
+        
+        # فیلتر نزدیکی به حمایت (Near_Major_Static_Support)
+        PROXIMITY_THRESHOLD = 0.07 # 7%
+        distance_from_support = ((last_close_val - MAJOR_STATIC_SUPPORT) / MAJOR_STATIC_SUPPORT) * 100
+        
+        if 0 <= distance_from_support <= PROXIMITY_THRESHOLD * 100:
+            satisfied_filters.append("Near_Major_Static_Support") # نام فیلتر جدید
+            
+        # فیلتر جریمه شکست حمایت (Break_Below_Static_Support)
+        if last_close_val < MAJOR_STATIC_SUPPORT:
+            satisfied_filters.append("Break_Below_Static_Support") # نام فیلتر جریمه
 
-    # --- Static Resistance Breakout ---
+    # --- B. بررسی مقاومت استاتیک (منطق قدیمی شما) ---
+    # 📢 توجه: این بخش همچنان نیاز به فیلد 'static_resistance_level' در technical_rec دارد.
     static_resistance = _get_attr_safe(technical_rec, 'static_resistance_level')
     if static_resistance is not None and static_resistance > 0:
-        # اگر قیمت بیش از 1% بالاتر از مقاومت باشد (تایید شکست)
         distance_from_resistance = ((last_close_val - static_resistance) / static_resistance) * 100
         if distance_from_resistance > 1:
             satisfied_filters.append("Static_Resistance_Broken")
             reason_parts["static_levels"].append(f"Static resistance broken ({static_resistance:,.0f}, {distance_from_resistance:.1f}% above).")
 
+    # اگر حمایت دینامیک پیدا نشده بود، و تابع قبلی حمایت از پیش محاسبه شده داشت، می‌توانید در اینجا
+    # آن را اضافه کنید، اما چون گفتید ستون را ندارید، فعلاً از آن صرف‌نظر می‌کنیم.
+    
     return satisfied_filters, reason_parts
 
 def _check_ml_prediction_filter(symbol_id):
@@ -936,7 +944,8 @@ class WeeklyWatchlistService:
         # 3.5. Static Levels Filters
         last_tech = tech_df.iloc[-1]
         last_close = close_ser.iloc[-1]
-        static_filters, static_reasons = _check_static_levels_filters(last_tech, last_close)
+        # 📢 تغییر: ارسال دیتافریم تاریخی (hist_df) برای محاسبه دینامیک حمایت
+        static_filters, static_reasons = _check_static_levels_filters(hist_df, last_tech, last_close)
         
         # 3.6. Sector Strength Filter
         sector_filters, sector_reasons = _check_sector_strength_filter(symbol_data_rec.group_name, self.leading_sectors)
