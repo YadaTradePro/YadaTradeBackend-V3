@@ -11,7 +11,9 @@ import datetime
 from sqlalchemy import func
 from functools import lru_cache
 from typing import Union, List, Dict, Optional, Tuple, Any
-import time 
+import time
+
+from models import HistoricalData
 
 # تنظیمات لاگینگ
 logger = logging.getLogger(__name__)
@@ -731,6 +733,45 @@ def calculate_fundamental_metrics(df: pd.DataFrame, fundamental_df: Optional[pd.
         logger.error(f"خطا در محاسبه شاخص‌های فاندامنتال: {e}")
     
     return df_copy
+
+
+# -----------------------------------------------------------
+# توابع کمکی محاسبه ساده حمایت استاتیک (Major Swing Low)
+# -----------------------------------------------------------
+
+def calculate_static_support(historical_data: List[HistoricalData], lookback_period: int = 120) -> Optional[float]:
+    """
+    محاسبه ساده حمایت استاتیک (Major Swing Low)
+    """
+    
+    # 1. داده‌ها را محدود به بازه زمانی مورد نظر (مثلاً 120 روز) کنید
+    recent_data = historical_data[-lookback_period:]
+    
+    if not recent_data:
+        return None
+
+    # 2. پیدا کردن کمترین 'Low' در کل بازه
+    # این ساده‌ترین شکل حمایت است.
+    lowest_low = min(d.low for d in recent_data)
+    
+    # --- منطق پیشرفته‌تر (اختیاری) ---
+    # برای اطمینان از اینکه این نقطه واقعاً یک حمایت اصلی است، 
+    # بررسی کنید که پس از آن، قیمت حداقل X درصد بالا رفته باشد.
+    
+    # پیدا کردن تاریخی که lowest_low در آن رخ داده
+    lowest_low_date = next(d.date for d in recent_data if d.low == lowest_low)
+    
+    # بررسی کنید که آیا بعد از آن تاریخ، قیمت به میزان قابل توجهی (مثلاً 10%) بهبود یافته است.
+    # این کار از انتخاب نقاط نزولی ساده جلوگیری می‌کند.
+    max_price_after_low = max(d.high for d in recent_data if d.date >= lowest_low_date)
+
+    if (max_price_after_low - lowest_low) / lowest_low > 0.10: # اگر بیش از 10% بهبود یافته
+        return lowest_low
+    else:
+        # اگر سهم هنوز در حال سقوط است یا تراکم ضعیف دارد، حمایت را بالاتر (مثلاً کف اخیر) بگیرید.
+        # می‌توانید به جای None، کف اخیر یک دوره کوتاه‌تر را برگردانید.
+        return None # یا منطق پیچیده‌تر
+
 
 # -----------------------------------------------------------
 # توابع کمکی برای تحلیل پیشرفته
