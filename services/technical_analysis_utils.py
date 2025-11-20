@@ -739,38 +739,60 @@ def calculate_fundamental_metrics(df: pd.DataFrame, fundamental_df: Optional[pd.
 # توابع کمکی محاسبه ساده حمایت استاتیک (Major Swing Low)
 # -----------------------------------------------------------
 
-def calculate_static_support(historical_data: List[HistoricalData], lookback_period: int = 120) -> Optional[float]:
+def calculate_static_support(historical_data, lookback_period: int = 120) -> Optional[float]:
     """
     محاسبه ساده حمایت استاتیک (Major Swing Low)
+    ورودی می‌تواند DataFrame یا لیست باشد.
     """
-    
-    # 1. داده‌ها را محدود به بازه زمانی مورد نظر (مثلاً 120 روز) کنید
+
+    # --- اگر ورودی DataFrame بود ---
+    if isinstance(historical_data, pd.DataFrame):
+        df = historical_data.tail(lookback_period).copy()
+
+        # ---- FIX 1 ----
+        # اگر ستون date وجود ندارد ولی jdate هست → تبدیل کن
+        if 'date' not in df.columns:
+            if 'jdate' in df.columns:
+                # تبدیل جلالی به میلادی (اگر backend شما خودش قبلاً تبدیل کرده، فقط تغییر نام بده)
+                try:
+                    df['date'] = pd.to_datetime(df['jdate'], format='%Y-%m-%d', errors='coerce')
+                except:
+                    df['date'] = df['jdate']
+
+        # ---- FIX 2 ----
+        if df is None or df.empty:
+            return None
+
+
+        # کمترین low در بازه
+        lowest_low = df['low'].min()
+        lowest_row = df.loc[df['low'] == lowest_low].iloc[0]
+
+        # بررسی رشد 10 درصدی بعد از آن
+        max_after = df.loc[df['date'] >= lowest_row['date'], 'high'].max()
+
+        if lowest_low == 0 or pd.isna(lowest_low):
+            return None
+
+        if (max_after - lowest_low) / lowest_low > 0.10:
+            return float(lowest_low)
+        else:
+            return None
+
+    # --- اگر ورودی لیست ORM بود ---
     recent_data = historical_data[-lookback_period:]
-    
-    if not recent_data:
+
+    if recent_data is None or len(recent_data) == 0:
         return None
 
-    # 2. پیدا کردن کمترین 'Low' در کل بازه
-    # این ساده‌ترین شکل حمایت است.
     lowest_low = min(d.low for d in recent_data)
-    
-    # --- منطق پیشرفته‌تر (اختیاری) ---
-    # برای اطمینان از اینکه این نقطه واقعاً یک حمایت اصلی است، 
-    # بررسی کنید که پس از آن، قیمت حداقل X درصد بالا رفته باشد.
-    
-    # پیدا کردن تاریخی که lowest_low در آن رخ داده
     lowest_low_date = next(d.date for d in recent_data if d.low == lowest_low)
-    
-    # بررسی کنید که آیا بعد از آن تاریخ، قیمت به میزان قابل توجهی (مثلاً 10%) بهبود یافته است.
-    # این کار از انتخاب نقاط نزولی ساده جلوگیری می‌کند.
     max_price_after_low = max(d.high for d in recent_data if d.date >= lowest_low_date)
 
-    if (max_price_after_low - lowest_low) / lowest_low > 0.10: # اگر بیش از 10% بهبود یافته
+    if (max_price_after_low - lowest_low) / lowest_low > 0.10:
         return lowest_low
     else:
-        # اگر سهم هنوز در حال سقوط است یا تراکم ضعیف دارد، حمایت را بالاتر (مثلاً کف اخیر) بگیرید.
-        # می‌توانید به جای None، کف اخیر یک دوره کوتاه‌تر را برگردانید.
-        return None # یا منطق پیچیده‌تر
+        return None
 
 
 # -----------------------------------------------------------
@@ -839,5 +861,6 @@ __all__ = [
     'calculate_bollinger_bands',
     'calculate_atr',
     'calculate_stochastic',
-    'calculate_z_score'
+    'calculate_z_score',
+    'calculate_static_support'
 ]
