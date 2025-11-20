@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 # services/data_fetcher.py
-# مسئولیت: اجرای چرخه کامل بازسازی داده‌های پایه با مکانیزم‌های بازیابی، مدیریت خطا و Caching.
+# نسخه: B+ — بهینه‌شده، سازگار با get_stats و با fallback برای client_types
+# مسئولیت: دریافت و پردازش داده‌های تاریخی و بنیادی (Historical & Fundamental)
 
 import logging
 import pytse_client as tse
+from pytse_client import download_client_types_records, get_stats
 import pandas as pd
 import jdatetime
 import time
@@ -11,163 +13,169 @@ import gc
 import json
 import functools
 import random
-import os 
-import re 
-import numpy as np 
-from datetime import datetime, date, timedelta 
-from typing import List, Dict, Optional, Any, Tuple
+import os
+import re
+import numpy as np
+from datetime import datetime, date, timedelta
+from typing import List, Dict, Optional, Any, Tuple, Union
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy.exc import SQLAlchemyError, OperationalError, IntegrityError
 from extensions import db
 from models import ComprehensiveSymbolData, HistoricalData, FundamentalData
-from pytse_client import download_client_types_records
-from sqlalchemy import text 
+from sqlalchemy import text
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module='pytse_client')
 
 # ----------------------------
-# تنظیمات پایه و متغیرها
+# تنظیمات پایه
 # ----------------------------
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 PROGRESS_FILE = "rebuild_progress.json"
-CLIENT_TYPES_CACHE_FILE = "client_types_cache.pkl" 
-COMMIT_BATCH_SIZE = 100 
+COMMIT_BATCH_SIZE = 100
+MAX_RETRY_BACKOFF = 300  # cap backoff
 
-# نگاشت ستون‌های اصلی HistoricalData از خروجی Ticker.history
+# نگاشت ستون‌های تاریخچه (Ticker.history) به دیتابیس
 HISTORICAL_COLUMN_MAPPING = {
-    'Date': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 
-    'Final': 'final', 'Close': 'close', 
-    'Volume': 'volume', 'Value': 'value', 'Count': 'num_trades', 
-    'PLast': 'yesterday_price', # این ستون در محاسبات زیر جایگزین می‌شود
-    'PDrCotVal': 'yesterday',
+    'Date': 'date',
+    'Open': 'open',
+    'High': 'high',
+    'Low': 'low',
+    'Final': 'final',
+    'adjClose': 'final',
+    'Close': 'close',
+    'Volume': 'volume',
+    'Value': 'value',
+    'Count': 'num_trades',
+    'PLast': 'yesterday_price',
+    'yesterday': 'yesterday_price',
 }
 
-# نگاشت ستون‌های حقیقی/حقوقی برای ادغام
 CLIENT_TYPE_COLUMN_MAPPING = {
-    "individual_buy_count": "buy_count_i", "corporate_buy_count": "buy_count_n",
-    "individual_sell_count": "sell_count_i", "corporate_sell_count": "sell_count_n",
-    "individual_buy_vol": "buy_i_volume", "corporate_buy_vol": "buy_n_volume",
-    "individual_sell_vol": "sell_i_volume", "corporate_sell_vol": "sell_n_volume",
+    "individual_buy_count": "buy_count_i",
+    "corporate_buy_count": "buy_count_n",
+    "individual_sell_count": "sell_count_i",
+    "corporate_sell_count": "sell_count_n",
+    "individual_buy_vol": "buy_i_volume",
+    "corporate_buy_vol": "buy_n_volume",
+    "individual_sell_vol": "sell_i_volume",
+    "corporate_sell_vol": "sell_n_volume",
 }
 
 # ----------------------------
-# ۱. توابع کمکی (Helper Functions)
+# ۱. توابع کمکی
 # ----------------------------
 
 def get_value_safely(obj: Any, key: str, default: Any = None) -> Any:
-    """دسترسی ایمن به مقدار (دیکشنری یا آبجکت)."""
+    """دریافت ایمن مقدار از دیکشنری یا آبجکت."""
     if isinstance(obj, dict):
         return obj.get(key, default)
-    return getattr(obj, key, default)
+    try:
+        return getattr(obj, key, default)
+    except Exception:
+        return default
+
+
+def safe_get_ticker_attr(ticker_obj: Any, attr_name: str, default: Any = None) -> Any:
+    """دریافت ایمن ویژگی از Ticker."""
+    try:
+        val = getattr(ticker_obj, attr_name, default)
+        return val if val is not None else default
+    except Exception:
+        return default
+
 
 def is_symbol_valid(symbol_name: str, market_type_name: str) -> bool:
-    """بررسی اعتبار نماد."""
+    """بررسی اعتبار نماد (حذف حق تقدم، مشتقه و...)"""
     try:
         if not symbol_name:
             return False
         market_lower = str(market_type_name).lower() if market_type_name else ''
-        
-        BAD_SUFFIXES = ('ح', 'ض', 'ص', 'و')  
+
+        BAD_SUFFIXES = ('ح', 'ض', 'ص', 'و')
         if (symbol_name.endswith(BAD_SUFFIXES) and len(symbol_name) > 1) or \
-            re.search(r"\b(حق\s*تقدم|ح\.?\s*تقدم)\b", symbol_name, re.IGNORECASE):
+                re.search(r"\b(حق\s*تقدم|ح\.?\s*تقدم)\b", symbol_name, re.IGNORECASE):
             return False
 
         INVALID_MARKET_KEYWORDS = ['اختیار', 'آتی', 'مشتقه', 'تسهیلات']
         if any(keyword.lower() in market_lower for keyword in INVALID_MARKET_KEYWORDS):
             return False
-        
+
         return True
 
     except Exception as e:
         logger.error(f"Error checking symbol validity {symbol_name}: {e}")
-        return False 
+        return False
 
 
-def retry_on_exception(max_retries=5, delay=60, backoff=2.0):
-    """
-    Decorator برای اجرای مجدد یک تابع در صورت بروز خطا.
-    max_retries=5 و delay=60 برای مدیریت timeout نمادهای سنگین.
-    """
+def retry_on_exception(max_retries=5, delay=30, backoff=2.0, allowed_exceptions=(Exception, OperationalError)):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            retries, wait = 0, delay
+            retries = 0
+            wait = delay
+            last_exc = None
             while retries < max_retries:
                 try:
                     return func(*args, **kwargs)
-                except (Exception, OperationalError) as e:
+                except allowed_exceptions as e:
+                    last_exc = e
                     retries += 1
-                    logger.warning(f"Error in {func.__name__}: {e}. Retrying {retries}/{max_retries} after {wait:.2f}s...")
-                    time.sleep(wait + random.uniform(0, 5)) # افزودن نویز بیشتر به تاخیر
-                    wait *= backoff
-            raise
+                    logger.warning(f"Error in {func.__name__}: {e}. Retrying {retries}/{max_retries} after {wait:.1f}s...")
+                    sleep_time = wait + random.uniform(0, min(5, wait))
+                    time.sleep(sleep_time)
+                    wait = min(wait * backoff, MAX_RETRY_BACKOFF)
+            logger.error(f"Max retries exceeded for {func.__name__}: {last_exc}")
+            raise last_exc
         return wrapper
     return decorator
 
+
 def to_jdate_safe(d: Any) -> Optional[str]:
-    """تبدیل ایمن تاریخ میلادی (Timestamp/date) به شمسی."""
-    if pd.isna(d):
+    if d is None or (isinstance(d, float) and np.isnan(d)):
         return None
     try:
-        g_date = d.date() if hasattr(d, "date") else d
+        if hasattr(d, "date"):
+            g_date = d.date()
+        else:
+            g_date = d
         if isinstance(g_date, str):
             g_date = datetime.strptime(g_date, "%Y-%m-%d").date()
         return jdatetime.date.fromgregorian(date=g_date).strftime("%Y-%m-%d")
     except Exception:
         return None
 
-# ----------------------------
-# ۱.۱. تابع کمکی دیباگ جدید
-# ----------------------------
 
 def log_error_dataframe(symbol_name: str, df: pd.DataFrame, error: Exception) -> None:
-    """
-    دفترچه DataFrame مشکل‌ساز و جزئیات خطا را در یک فایل JSON ذخیره می‌کند. 
-    این فایل حاوی تمام داده‌های خامی است که باعث خطای float() شده است.
-    """
     DEBUG_DIR = "debug_data"
     os.makedirs(DEBUG_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
     try:
-        # کپی DataFrame برای تغییرات مورد نیاز جهت سریال‌سازی
         df_log = df.copy()
-        
-        # تبدیل ستون‌های تاریخ به رشته برای JSON
         for col in df_log.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns:
-             df_log[col] = df_log[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # جایگزینی NaT (تاریخ نامعتبر) با یک رشته قابل تشخیص و NaN با None 
-        # (تا نشان داده شود که این مقدار NaN بوده است)
+            df_log[col] = df_log[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+
         df_log = df_log.replace({pd.NaT: 'NaT_Found', np.nan: None})
-        
+
         log_data = {
             "symbol": symbol_name,
-            "error_type": type(error).__name__,
-            "error_message": str(error),
+            "error": str(error),
             "timestamp": timestamp,
-            "df_data": df_log.to_dict('records') # ذخیره تمام داده‌ها
+            "df_data": df_log.head(10).to_dict('records')
         }
-
-        filename = os.path.join(DEBUG_DIR, f"{symbol_name}_{timestamp}_error.json")
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(os.path.join(DEBUG_DIR, f"{symbol_name}_{timestamp}_error.json"), 'w', encoding='utf-8') as f:
             json.dump(log_data, f, indent=4, ensure_ascii=False)
-        logger.error(f"DEBUG: Saved problematic DataFrame for {symbol_name} to {filename}")
-
     except Exception as e:
-        logger.error(f"DEBUG: Failed to save debug data for {symbol_name}. Secondary error: {e}")
+        logger.exception(f"Failed to write debug dataframe for {symbol_name}: {e}")
 
 
 # ----------------------------
-# ۲. مدیریت Session و پاکسازی
+# ۲. مدیریت دیتابیس
 # ----------------------------
-# ... (توابع get_session_local، clear_all_tables، vacuum_database بدون تغییر) ...
 
 def get_session_local() -> Session:
-    """ایجاد session local با application context."""
     try:
         from flask import current_app
         with current_app.app_context():
@@ -176,551 +184,506 @@ def get_session_local() -> Session:
         try:
             return sessionmaker(bind=db.get_engine())()
         except AttributeError:
-             return sessionmaker(bind=db.engine)()
+            return sessionmaker(bind=db.engine)()
+
 
 def clear_all_tables(session: Session) -> None:
-    """پاکسازی کامل داده‌های جداول هدف."""
-    logger.warning("Step 0.2: Starting full TRUNCATE/DELETE on target tables...")
+    logger.warning("Step 0.2: Clearing tables...")
     try:
         session.query(HistoricalData).delete(synchronize_session='fetch')
         session.query(FundamentalData).delete(synchronize_session='fetch')
         session.query(ComprehensiveSymbolData).delete(synchronize_session='fetch')
         session.commit()
-        logger.info("Step 0.2 Completed: Successfully cleared HistoricalData, FundamentalData, and ComprehensiveSymbolData tables.")
+        logger.info("Step 0.2 Completed: Tables cleared.")
     except Exception as e:
         session.rollback()
-        logger.error(f"Error during table clear: {e}", exc_info=True)
-        raise
+        logger.exception("Error clearing tables.")
+        raise e
+
 
 def vacuum_database(session: Session) -> None:
-    """اجرای دستور VACUUM برای بازیابی فضای اشغال شده در SQLite."""
-    if session.bind.name == 'sqlite':
-        logger.warning("Step 0.3: Starting VACUUM on SQLite database to reclaim space...")
-        try:
+    try:
+        if hasattr(session.bind, "name") and session.bind.name == 'sqlite':
+            logger.warning("Step 0.3: Running VACUUM...")
             session.execute(text("VACUUM"))
             session.commit()
-            logger.info("Step 0.3 Completed: Database VACUUM successful. File size should now be reduced.")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error during VACUUM command: {e}", exc_info=True)
-            pass
-    else:
-        logger.info("Step 0.3: Skipping VACUUM as database is not SQLite.")
+    except Exception:
+        logger.exception("VACUUM failed or not applicable.")
 
 
 # ----------------------------
-# ۳. مدیریت پیشرفت (Progress Management)
+# ۳. مدیریت پیشرفت
 # ----------------------------
-# ... (توابع save_progress، load_progress، delete_progress بدون تغییر) ...
+
 def save_progress(progress_file: str, current_index: int) -> None:
-    """ذخیره آخرین اندیس شروع."""
     try:
         with open(progress_file, "w", encoding="utf-8") as f:
-            json.dump({"last_index": current_index}, f)
-    except Exception as e:
-        logger.warning(f"Failed to save progress to {progress_file}: {e}")
+            json.dump({"last_index": int(current_index)}, f)
+    except Exception:
+        logger.exception("Failed to save progress.")
+
 
 def load_progress(progress_file: str) -> int:
-    """بارگذاری آخرین اندیس ذخیره شده."""
     try:
         with open(progress_file, "r", encoding="utf-8") as f:
-            return json.load(f).get("last_index", 0)
-    except FileNotFoundError:
+            return int(json.load(f).get("last_index", 0))
+    except Exception:
         return 0
-    except json.JSONDecodeError:
-        logger.warning(f"Progress file {progress_file} is corrupted. Starting from index 0.")
-        return 0
-    
+
+
 def delete_progress(progress_file: str) -> None:
-    """حذف فایل پیشرفت."""
     try:
         if os.path.exists(progress_file):
-            os.remove(os.path.abspath(progress_file)) 
-            logger.info(f"Progress file {progress_file} deleted.")
+            os.remove(progress_file)
+    except Exception:
+        logger.exception("Failed to delete progress file.")
+
+
+# ----------------------------
+# ۴. توابع واکشی داده
+# ----------------------------
+
+@retry_on_exception(max_retries=5, delay=10, backoff=2.0)
+def download_all_symbols_wrapper() -> List[str]:
+    """دریافت لیست نمادها با استفاده از get_stats (پایدارتر از download(symbols='all'))."""
+    logger.info("Step 1.1: Fetching symbols list via get_stats()...")
+    try:
+        df = get_stats(to_csv=False)
     except Exception as e:
-        logger.warning(f"Failed to delete progress file: {e}")
+        logger.exception(f"get_stats() failed: {e}")
+        return []
+
+    if df is None or df.empty:
+        logger.error("get_stats() returned empty DataFrame.")
+        return []
+
+    if "symbol" not in df.columns:
+        logger.error("get_stats() missing column 'symbol'.")
+        return []
+
+    symbols = df["symbol"].dropna().astype(str).unique().tolist()
+    logger.info(f"Fetched {len(symbols)} symbols from TSETMC stats API.")
+    return symbols
 
 
-# ----------------------------
-# ۴. توابع واکشی 
-# ----------------------------
-
-# Max retries increased to 5, delay increased to 60s for stability with large datasets (e.g., Khodro)
-@retry_on_exception(max_retries=5, delay=60, backoff=2.0)
-def download_all_symbols_wrapper() -> Dict[str, Any]:
-    """واکشی اولیه تمام داده‌های نمادها."""
-    logger.info("Step 1.1: Starting download of all symbol list from TSETMC...")
-    data = tse.download(symbols="all", write_to_csv=False)
-    logger.info(f"Step 1.1 Completed: Successfully downloaded {len(data)} basic symbol records.")
-    return data
-
-# Max retries increased to 5, delay increased to 60s for stability
-@retry_on_exception(max_retries=5, delay=60, backoff=2.0)
+@retry_on_exception(max_retries=3, delay=5, backoff=2.0)
 def download_client_types_wrapper() -> Dict[str, pd.DataFrame]:
-    """واکشی اولیه تمام رکوردهای حقیقی/حقوقی (با Caching)."""
-    logger.info("Step 1.2: Starting download of all client-type (individual/legal) records...")
-    client_types_all = download_client_types_records("all", write_to_csv=False)
-    
-    if client_types_all:
-        logger.info(f"Step 1.2 Completed: Successfully downloaded client-type data for {len(client_types_all)} symbols.")
-    else:
-        logger.warning("Step 1.2 Completed: Client-type download returned EMPTY data.")
-        
-    return client_types_all
+    """Improved: do NOT fetch all at once — pytse is unstable.
+    Instead, return an EMPTY dict. Client types will be fetched per-symbol.
+    """
+    logger.info("Step 1.2: Skipping global client types download — using per-symbol fetch.")
+    return {}
+
+
 
 # ----------------------------
-# ۵. توابع استخراج و درج داده‌ها
+# ۵. پردازش و درج داده‌ها
 # ----------------------------
+
+def _prepare_client_df_for_merge(df_client: pd.DataFrame) -> Optional[pd.DataFrame]:
+    try:
+        if df_client is None or not isinstance(df_client, pd.DataFrame) or df_client.empty:
+            return None
+
+        cols = [c.lower() for c in df_client.columns]
+        if 'date' not in cols:
+            for c in df_client.columns:
+                if re.search(r"date", str(c), re.IGNORECASE):
+                    df_client = df_client.rename(columns={c: 'date'})
+                    break
+
+        if 'date' not in df_client.columns:
+            return None
+
+        df_client['date'] = pd.to_datetime(df_client['date'], errors='coerce').dt.normalize()
+        if df_client['date'].isna().all():
+            return None
+
+        rename_map = {}
+        for src, tgt in CLIENT_TYPE_COLUMN_MAPPING.items():
+            for col in df_client.columns:
+                if col.lower() == src.lower() or re.sub(r'[_\s]', '', col.lower()) == re.sub(r'[_\s]', '', src.lower()):
+                    rename_map[col] = tgt
+        if rename_map:
+            df_client = df_client.rename(columns=rename_map)
+
+        keep_cols = ['date'] + list(set(CLIENT_TYPE_COLUMN_MAPPING.values()) & set(df_client.columns))
+        df_client = df_client[keep_cols].copy()
+
+        for c in df_client.columns:
+            if c == 'date':
+                continue
+            df_client[c] = pd.to_numeric(df_client[c], errors='coerce').fillna(0)
+
+        return df_client.reset_index(drop=True)
+    except Exception:
+        logger.exception("Error preparing client types DataFrame.")
+        return None
+
 
 def extract_and_insert_symbol_data(session: Session, symbol_name: str, ticker: tse.Ticker) -> Optional[str]:
-    """استخراج و درج داده‌های پایه نماد."""
     try:
         symbol_id = getattr(ticker, "index", None)
         if not symbol_id:
             return None
 
         now = datetime.now()
-        
-        market_data = getattr(ticker, "market", None) or getattr(ticker, "flow", None)
-        
-        float_percent = getattr(ticker, "float_shares", None)
-        total_shares = getattr(ticker, "total_shares", None)
+        market_data = safe_get_ticker_attr(ticker, "market") or safe_get_ticker_attr(ticker, "flow")
+
+        float_percent = safe_get_ticker_attr(ticker, "float_shares")
+        total_shares = safe_get_ticker_attr(ticker, "total_shares")
         float_shares_count = None
-        
-        if float_percent is not None and total_shares is not None:
-            try:
-                # تبدیل به float برای اطمینان
-                fp = float(float_percent)
-                ts = float(total_shares)
-                float_shares_count = (fp * ts) / 100
-            except (ValueError, TypeError):
-                pass
+        try:
+            if float_percent is not None and total_shares is not None:
+                float_shares_count = (float(float_percent) * float(total_shares)) / 100
+        except Exception:
+            float_shares_count = None
 
         comp_data = {
             "symbol_id": symbol_id,
             "symbol_name": symbol_name,
-            "company_name": getattr(ticker, "title", None),
-            "isin": getattr(ticker, "isin", None),
+            "company_name": safe_get_ticker_attr(ticker, "title"),
+            "isin": safe_get_ticker_attr(ticker, "isin"),
             "tse_index": symbol_id,
             "market_type": market_data,
-            "group_name": getattr(ticker, "group_name", None),
-            "base_volume": getattr(ticker, "base_volume", None),
-            "eps": getattr(ticker, "eps", None),
-            "p_e_ratio": getattr(ticker, "p_e_ratio", None),
-            "p_s_ratio": getattr(ticker, "p_s_ratio", None),
-            "nav": getattr(ticker, "nav", None),
-            "float_shares": float_shares_count, 
-            "market_cap": getattr(ticker, "market_cap", None),
-            "industry": getattr(ticker, "group_name", None),
+            "group_name": safe_get_ticker_attr(ticker, "group_name"),
+            "base_volume": safe_get_ticker_attr(ticker, "base_volume"),
+            "eps": safe_get_ticker_attr(ticker, "eps"),
+            "p_e_ratio": safe_get_ticker_attr(ticker, "p_e_ratio"),
+            "p_s_ratio": safe_get_ticker_attr(ticker, "p_s_ratio"),
+            "nav": safe_get_ticker_attr(ticker, "nav"),
+            "float_shares": float_shares_count,
+            "market_cap": safe_get_ticker_attr(ticker, "market_cap"),
+            "industry": safe_get_ticker_attr(ticker, "group_name"),
             "capital": total_shares,
-            "fiscal_year": getattr(ticker, "fiscal_year", None),
-            "flow": getattr(ticker, "flow", None),
-            "state": getattr(ticker, "state", None),
+            "fiscal_year": safe_get_ticker_attr(ticker, "fiscal_year"),
+            "flow": safe_get_ticker_attr(ticker, "flow"),
+            "state": safe_get_ticker_attr(ticker, "state"),
             "last_fundamental_update_date": now.date(),
             "updated_at": now
         }
-        
-        session.add(ComprehensiveSymbolData(**comp_data)) 
+        session.add(ComprehensiveSymbolData(**comp_data))
         return symbol_id
-
     except Exception as e:
-        logger.error(f"Error processing Comprehensive data for {symbol_name}: {e}")
+        logger.exception(f"Error inserting Comprehensive data for {symbol_name}: {e}")
         return None
 
-def extract_and_insert_historical_data(session: Session, symbol_id: str, symbol_name: str, ticker: tse.Ticker, client_types_all: Dict[str, pd.DataFrame]) -> int:
-    """استخراج، غنی‌سازی و درج داده‌های تاریخی و فاندامنتال روزانه."""
-    df = None # تضمین می کند که df تعریف شده باشد حتی اگر در ابتدا خطایی رخ دهد.
+
+def extract_and_insert_historical_data(session: Session, symbol_id: str, symbol_name: str, ticker: tse.Ticker,
+                                       client_types_all: Dict[str, pd.DataFrame]) -> int:
+    df = None
     try:
-        df = ticker.history
-        if df is None or df.empty:
+        df = getattr(ticker, "history", None)
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return 0
 
         df = df.copy()
 
-        # استانداردسازی ستون تاریخ و نگاشت نام ستون‌ها
         if "date" not in df.columns:
             df.reset_index(inplace=True)
             if "Date" in df.columns:
                 df.rename(columns={"Date": "date"}, inplace=True)
             elif "DATE" in df.columns:
                 df.rename(columns={"DATE": "date"}, inplace=True)
-        
-        for source_col, target_col in HISTORICAL_COLUMN_MAPPING.items():
-            if source_col in df.columns:
-                df.rename(columns={source_col: target_col}, inplace=True)
-            elif source_col.lower() in df.columns:
-                df.rename(columns={source_col.lower(): target_col}, inplace=True)
-        
-        if 'final' not in df.columns and 'adjClose' in df.columns:
-             df.rename(columns={'adjClose': 'final'}, inplace=True)
-        
-        # ادغام داده‌های حقیقی/حقوقی
-        if client_types_all and symbol_name in client_types_all:
-            df_client = client_types_all.get(symbol_name)
-            if df_client is not None and not df_client.empty:
-                df_client = df_client.rename(columns=CLIENT_TYPE_COLUMN_MAPPING)
-                df_client["date"] = pd.to_datetime(df_client["date"], errors='coerce').dt.normalize()
-                df["date"] = pd.to_datetime(df["date"], errors='coerce').dt.normalize()
-                
-                df = pd.merge(
-                    df,
-                    df_client[["date"] + list(CLIENT_TYPE_COLUMN_MAPPING.values())],
-                    on="date",
-                    how="left"
-                )
 
-        # ----------------------------------------------------------------------
-        # FIX CRITICAL FOR NATYPE: تمیزکاری تاریخ و حذف سطرهای بدون تاریخ/قیمت/حجم
-        if 'date' in df.columns:
-            # 1. اطمینان از تبدیل تاریخ به فرمت Datetime64 و جایگزینی مقادیر نامعتبر با NaT
-            df.loc[:, 'date'] = pd.to_datetime(df['date'], errors='coerce').dt.normalize()
-            
-            # 2. **تمیزکاری مضاعف**: حذف سطر‌هایی که تاریخ معتبری ندارند (NaT) یا ستون‌های عددی اصلی (final/volume) در آن‌ها NaN است.
-            key_columns_to_check = ['date', 'final', 'volume']
-            df.dropna(subset=[col for col in key_columns_to_check if col in df.columns], inplace=True) 
-        
+        for source, target in HISTORICAL_COLUMN_MAPPING.items():
+            if source in df.columns:
+                df.rename(columns={source: target}, inplace=True)
+            elif source.lower() in [c.lower() for c in df.columns]:
+                for c in df.columns:
+                    if c.lower() == source.lower():
+                        df.rename(columns={c: target}, inplace=True)
+                        break
+
+        if 'final' not in df.columns and 'adjClose' in df.columns:
+            df.rename(columns={'adjClose': 'final'}, inplace=True)
+
+        # 2. client types: ابتدا از bulk dict تلاش کن، در غیر اینصورت از ticker.client_types استفاده کن
+        df_client = None
+        if client_types_all and isinstance(client_types_all, dict):
+            raw_client = client_types_all.get(symbol_name) or client_types_all.get(str(symbol_id))
+            if raw_client is not None:
+                df_client = _prepare_client_df_for_merge(raw_client)
+
+        if df_client is None:
+            # fallback: تلاش برای خواندن از ticker.client_types (یک نماد احتمالاً اطلاعات دارد)
+            try:
+                raw_ct = getattr(ticker, 'client_types', None)
+                if isinstance(raw_ct, pd.DataFrame) and not raw_ct.empty:
+                    df_client = _prepare_client_df_for_merge(raw_ct)
+            except Exception:
+                pass
+
+        if df_client is not None:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.normalize()
+            df = df.dropna(subset=['date'])
+            if not df.empty:
+                try:
+                    df = pd.merge(df, df_client, on="date", how="left")
+                except Exception:
+                    logger.exception(f"Merge failed for client types on {symbol_name}. Skipping merge.")
+        else:
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                df.dropna(subset=['date'], inplace=True)
+
         if df.empty:
-            logger.warning(f"Skipping {symbol_name}: DataFrame is empty after date/price cleanup.")
             return 0
 
-        # ----------------------------------------------------------------------
-        # FIX 2: تضمین نوع عددی و **رفع قطعی خطای NAType** با fillna(0.0)
-        
-        key_cols = ['open', 'high', 'low', 'final', 'close', 'volume', 'value', 'num_trades', 'yesterday']
-        client_type_cols = list(CLIENT_TYPE_COLUMN_MAPPING.values())
-        all_numeric_cols = key_cols + client_type_cols
+        df.drop_duplicates(subset=['date'], keep='last', inplace=True)
+        df.sort_values(by='date', inplace=True)
 
-        for col in all_numeric_cols:
+        numeric_cols = ['open', 'high', 'low', 'final', 'close', 'volume', 'value', 'num_trades',
+                        'yesterday_price'] + list(CLIENT_TYPE_COLUMN_MAPPING.values())
+
+        for col in numeric_cols:
             if col in df.columns:
-                # 1. تبدیل مقادیر غیر عددی/رشته‌ای به NaN (استاندارد)
-                df.loc[:, col] = pd.to_numeric(df.loc[:, col], errors='coerce')
-                
-                # 2. **دفاع مضاعف:** اگر ستون به دلیل نشت NaT نوع datetime/timedelta گرفته، آن را به float/NaN تبدیل کن.
-                if df[col].dtype.kind in ('M', 'm'): # M: Datetime, m: Timedelta
-                    df.loc[:, col] = df[col].astype(object) 
-                    df.loc[:, col] = pd.to_numeric(df.loc[:, col], errors='coerce') 
+                if col in ['num_trades'] + list(CLIENT_TYPE_COLUMN_MAPPING.values()):
+                    df[col] = pd.to_numeric(df[col], errors='coerce').astype(pd.Int64Dtype()).fillna(pd.NA)
+                else:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype(float)
 
-                # 3. **FIX CRITICAL NATYPE (بهبودیافته):** تمام NaNs را با 0.0 جایگزین کن و نتیجه را صراحتاً به نوع float تبدیل کن.
-                # این کار هشدار FutureWarning را حذف می‌کند.
-                df.loc[:, col] = df[col].fillna(0.0)
-                df.loc[:, col] = df[col].infer_objects(copy=False).astype(float)
-                
-                # 4. تبدیل نهایی به نوع دقیق (Int64 برای ستون‌های شمارشی)
-                if col in ['num_trades'] + client_type_cols:
-                     df.loc[:, col] = df[col].astype(pd.Int64Dtype()) 
-                # else: (قبلاً به float تبدیل شده)
+        if 'yesterday_price' not in df.columns or df['yesterday_price'].isna().all():
+            if 'close' in df.columns:
+                df['yesterday_price'] = df['close'].shift(1)
+            else:
+                df['yesterday_price'] = np.nan
 
-        df.sort_values(by='date', inplace=True) 
+        try:
+            if not df.empty:
+                first_idx = df.index[0]
+                if pd.isna(df.at[first_idx, 'yesterday_price']):
+                    if 'open' in df.columns and not pd.isna(df.at[first_idx, 'open']):
+                        df.at[first_idx, 'yesterday_price'] = df.at[first_idx, 'open']
+        except Exception:
+            logger.debug("Failed to set first yesterday_price safe fallback.")
 
-        # ----------------------------------------------------------------------
-        # محاسبات ستون‌های HistoricalData
-        
-        # محاسبه yesterday_price بر اساس قیمت بسته شدن روز قبل
-        df.loc[:, 'yesterday_price'] = df['close'].shift(1) 
-        
-        # برای اولین سطر (که shift(1) مقدار NaN می‌دهد)، از ستون 'yesterday' (PLast) استفاده کن
-        if 'yesterday' in df.columns and not df.empty:
-             df.loc[df.index[0], 'yesterday_price'] = df.loc[df.index[0], 'yesterday']
-        
-        # پر کردن باقی‌مانده NaN (اگر هنوز وجود دارد) با 0.0 برای جلوگیری از خطاهای محاسباتی
-        df.loc[:, 'yesterday_price'] = df.loc[:, 'yesterday_price'].fillna(0.0).astype(float)
-        
-        # محاسبه MV
-        if 'value' in df.columns:
-             df.loc[:, 'mv'] = df['value']
+        if 'value' in df.columns and not df['value'].isna().all():
+            df['mv'] = df['value'].astype(float)
         else:
-             df.loc[:, 'mv'] = df['final'] * df['volume']
+            df['mv'] = (df['final'].fillna(0.0) * df['volume'].fillna(0.0)).astype(float)
 
-        # FIX: استفاده از replace(0, np.nan) برای جلوگیری از تقسیم بر صفر (فقط برای مخرج)
-        # این هشدار FutureWarning را می‌دهد اما برای جلوگیری از تقسیم بر صفر (که خطا است) ضروری است.
-        yesterday_safe = df['yesterday_price'].replace(0, np.nan) 
+        yesterday_safe = df['yesterday_price'].astype(float).replace(0, np.nan)
 
-        # Price Changes
-        df.loc[:, 'pcc'] = df['final'] - df['yesterday_price']
-        df.loc[:, 'pcp'] = (df['pcc'] / yesterday_safe) * 100
-        
-        df.loc[:, 'plc'] = df['close'] - df['yesterday_price']
-        df.loc[:, 'plp'] = (df['plc'] / yesterday_safe) * 100
-            
-        # ----------------------------------------------------------------------
-        # محاسبات داده‌های فاندامنتال/سنتیمنت روزانه
-        
-        has_client_data = all(col in df.columns for col in ['buy_count_i', 'sell_count_i', 'buy_i_volume', 'sell_i_volume'])
+        df['pcc'] = df['final'].astype(float) - df['yesterday_price'].astype(float)
+        df['pcp'] = (df['pcc'] / yesterday_safe) * 100
 
-        if has_client_data:
-            # FIX: حفاظت قوی تقسیم بر صفر با replace(0, np.nan)
-            buy_count_safe = df['buy_count_i'].astype(float).replace(0, np.nan)
-            sell_count_safe = df['sell_count_i'].astype(float).replace(0, np.nan)
-            
-            # میانگین حجم
-            df.loc[:, 'real_buy_vol_avg'] = df['buy_i_volume'] / buy_count_safe
-            df.loc[:, 'real_sell_vol_avg'] = df['sell_i_volume'] / sell_count_safe
-            
-            # نسبت قدرت (مخرج: میانگین فروش)
-            sell_avg_safe = df['real_sell_vol_avg'].replace(0, np.nan)
-            df.loc[:, 'real_power_ratio'] = df['real_buy_vol_avg'] / sell_avg_safe
-            
-            # Daily Liquidity
-            price_for_daily_calc = df['close'] 
-            df.loc[:, 'real_buy_value'] = df['buy_i_volume'] * price_for_daily_calc
-            df.loc[:, 'real_sell_value'] = df['sell_i_volume'] * price_for_daily_calc
-            df.loc[:, 'daily_liquidity'] = df['real_buy_value'] - df['real_sell_value']
-        else:
-             df['real_power_ratio'] = None
-             df['daily_liquidity'] = None
+        df['plc'] = df['close'].astype(float) - df['yesterday_price'].astype(float)
+        df['plp'] = (df['plc'] / yesterday_safe) * 100
 
-        # Volume Ratio 20 Day
-        df.loc[:, 'volume_20d_avg'] = df['volume'].rolling(window=20, min_periods=1).mean()
+        buy_i_vol = df.get('buy_i_volume', pd.Series(0)).astype(float) if 'buy_i_volume' in df.columns else pd.Series(0)
+        sell_i_vol = df.get('sell_i_volume', pd.Series(0)).astype(float) if 'sell_i_volume' in df.columns else pd.Series(0)
+        buy_count_i = df.get('buy_count_i', pd.Series(0)).astype(float) if 'buy_count_i' in df.columns else pd.Series(0)
+        sell_count_i = df.get('sell_count_i', pd.Series(0)).astype(float) if 'sell_count_i' in df.columns else pd.Series(0)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            real_buy_avg = buy_i_vol / buy_count_i.replace({0: np.nan})
+            real_sell_avg = sell_i_vol / sell_count_i.replace({0: np.nan})
+            df['real_buy_vol_avg'] = real_buy_avg.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            df['real_sell_vol_avg'] = real_sell_avg.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+            df['real_power_ratio'] = df['real_buy_vol_avg'] / df['real_sell_vol_avg'].replace({0: np.nan})
+            df['real_power_ratio'] = df['real_power_ratio'].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        df['daily_liquidity'] = (buy_i_vol * df['close'].astype(float)) - (sell_i_vol * df['close'].astype(float))
+
+        df['volume_20d_avg'] = df['volume'].rolling(window=20, min_periods=1).mean()
         vol_avg_safe = df['volume_20d_avg'].replace(0, np.nan)
-        df.loc[:, 'volume_ratio_20d'] = df['volume'] / vol_avg_safe
-        
-        # ----------------------------------------------------------------------
-        # آماده‌سازی نهایی
-        
+        df['volume_ratio_20d'] = df['volume'].astype(float) / vol_avg_safe
+
         df["symbol_id"] = symbol_id
         df["symbol_name"] = symbol_name
         df["updated_at"] = datetime.now()
         df["jdate"] = df["date"].apply(to_jdate_safe)
-        
-        # ----------------------------------------------------------------------
-        # درج FundamentalData (روزانه)
-        
-        fund_data_static = {
-            "eps": getattr(ticker, "eps", None),
-            "pe": getattr(ticker, "p_e_ratio", None),
-            "group_pe_ratio": getattr(ticker, "group_p_e_ratio", None),
-            "psr": getattr(ticker, "psr", None) or getattr(ticker, "p_s_ratio", None),
-            "market_cap": getattr(ticker, "market_cap", None),
-            "float_shares": getattr(ticker, "float_shares", None),
-            "base_volume": getattr(ticker, "base_volume", None),
+
+        fund_static = {
+            "eps": safe_get_ticker_attr(ticker, "eps"),
+            "pe": safe_get_ticker_attr(ticker, "p_e_ratio"),
+            "group_pe_ratio": safe_get_ticker_attr(ticker, "group_p_e_ratio"),
+            "market_cap": safe_get_ticker_attr(ticker, "market_cap"),
+            "base_volume": safe_get_ticker_attr(ticker, "base_volume"),
+            "float_shares": safe_get_ticker_attr(ticker, "float_shares"),
         }
-        
-        df_fund_to_insert = df.copy()
-        for k, v in fund_data_static.items():
-            if k not in df_fund_to_insert.columns:
-                df_fund_to_insert[k] = v
 
-        fund_model_cols = [c.name for c in FundamentalData.__table__.columns]
-        df_fund_to_insert = df_fund_to_insert[[col for col in df_fund_to_insert.columns if col in fund_model_cols]]
-        
-        # تبدیل به دیکشنری و جایگزینی NaN با None
-        fund_records = df_fund_to_insert.to_dict("records")
-        cleaned_fund_records = []
-        for record in fund_records:
-            # جایگزینی مقادیر Pandas NaN (و 0.0 ناشی از fillna) با None برای پایگاه داده
-            cleaned_record = {k: (None if pd.isna(v) or v == 0.0 else v) for k, v in record.items()} 
-            cleaned_fund_records.append(cleaned_record)
-            
-        if cleaned_fund_records:
-            session.bulk_insert_mappings(FundamentalData, cleaned_fund_records) 
-            logger.info(f"Step 2.3.1: {len(cleaned_fund_records)} Fundamental records inserted for {symbol_name}.")
-        
-        # ----------------------------------------------------------------------
-        # درج HistoricalData (روزانه)
-        
-        model_cols = [c.name for c in HistoricalData.__table__.columns]
-        order_book_cols = [c.name for c in HistoricalData.__table__.columns if c.name.startswith(('zd', 'qd', 'pd', 'zo', 'qo', 'po'))]
-        target_cols = [col for col in model_cols if col not in order_book_cols]
-        
-        for col in target_cols:
-             if col not in df.columns:
-                  df[col] = None
+        df_fund = df.copy()
+        for k, v in fund_static.items():
+            df_fund[k] = v
 
-        df_to_insert = df[[col for col in df.columns if col in target_cols]]
+        fund_cols = [c.name for c in FundamentalData.__table__.columns]
+        fund_records = df_fund[[c for c in df_fund.columns if c in fund_cols]].to_dict("records")
+        cleaned_fund = [{k: (None if pd.isna(v) else v) for k, v in r.items()} for r in fund_records]
 
-        records = df_to_insert.to_dict("records")
-        cleaned_records = []
-        for record in records:
-            # جایگزینی مقادیر Pandas NaN (و 0.0 ناشی از fillna) با None برای پایگاه داده
-            cleaned_record = {k: (None if pd.isna(v) or v == 0.0 else v) for k, v in record.items()} 
-            cleaned_records.append(cleaned_record)
-            
-        if cleaned_records:
-            session.bulk_insert_mappings(HistoricalData, cleaned_records)
-            return len(cleaned_records)
+        if cleaned_fund:
+            try:
+                session.bulk_insert_mappings(FundamentalData, cleaned_fund)
+                logger.info(f"Step 2.3.1: {len(cleaned_fund)} Fundamental and Historical records inserted for {symbol_name}.")
+            except IntegrityError:
+                session.rollback()
+                logger.warning(f"Duplicate Fundamental data for {symbol_name}, skipping bulk insert.")
+            except Exception:
+                session.rollback()
+                logger.exception(f"Failed to bulk insert Fundamental for {symbol_name}.")
+
+        hist_cols = [c.name for c in HistoricalData.__table__.columns]
+        hist_records = df[[c for c in df.columns if c in hist_cols]].to_dict("records")
+        cleaned_hist = [{k: (None if pd.isna(v) else v) for k, v in r.items()} for r in hist_records]
+
+        if cleaned_hist:
+            try:
+                session.bulk_insert_mappings(HistoricalData, cleaned_hist)
+                return len(cleaned_hist)
+            except IntegrityError:
+                session.rollback()
+                logger.warning(f"Duplicate Historical data for {symbol_name}.")
+                return 0
+            except Exception:
+                session.rollback()
+                logger.exception(f"Failed to bulk insert Historical for {symbol_name}.")
+                return -1
 
         return 0
 
     except Exception as e:
-        # 🔴 تماس با تابع دیباگ در صورت بروز خطا
-        if df is not None and not df.empty:
+        session.rollback()
+        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             log_error_dataframe(symbol_name, df, e)
-        
-        logger.error(f"Error processing Historical/Fundamental data for {symbol_name}: {e}")
+        logger.exception(f"Error processing data for {symbol_name}: {e}")
         return -1
 
+
 # ----------------------------
-# ۶. تابع اصلی مدیریت چرخه بازسازی
+# ۶. تابع اصلی
 # ----------------------------
-# ... (تابع run_full_rebuild بدون تغییر) ...
 
 def run_full_rebuild(batch_size: int = 50, commit_batch_size: int = COMMIT_BATCH_SIZE) -> Dict[str, Any]:
-    """اجرای چرخه کامل بازسازی داده‌ها."""
-    logger.info("--- Starting Full Weekly Data Rebuild Process ---")
+    logger.info("--- Starting Full Weekly Data Rebuild ---")
     session = get_session_local()
     start_time = datetime.now()
-    
+
     try:
-        # گام ۰: مدیریت Resume
         start_index = load_progress(PROGRESS_FILE)
-        
         if start_index == 0:
-            logger.info("Step 0.1: Starting a FRESH rebuild (index 0).")
+            logger.info("Step 0.1: FRESH rebuild.")
             clear_all_tables(session)
             vacuum_database(session)
         else:
-            logger.warning(f"Step 0.1: Resuming rebuild from index {start_index}...")
+            logger.warning(f"Step 0.1: Resuming from {start_index}...")
 
-        # گام ۱: واکشی داده‌های اولیه 
-        all_tickers_data = download_all_symbols_wrapper()
-        client_types_all = download_client_types_wrapper()
-        
-        # گام ۱.۳: فیلترینگ زودهنگام نمادها
-        logger.info("Step 1.3: Starting early filtering of symbols (Hagh Taghodom, Invalid Markets)...")
-        raw_symbol_names = list(all_tickers_data.keys())
-        valid_symbol_names = []
-        
-        for symbol_name in raw_symbol_names:
-            # استفاده از تابع ایمن برای خواندن مقادیر (چه دیکشنری چه آبجکت)
-            ticker_data_basic = get_value_safely(all_tickers_data, symbol_name) if isinstance(all_tickers_data, dict) else None
-            if ticker_data_basic is None and isinstance(all_tickers_data, dict):
-                 ticker_data_basic = all_tickers_data.get(symbol_name)
+        # Symbols via get_stats
+        all_symbols = download_all_symbols_wrapper()
+        client_types = download_client_types_wrapper()
 
-            market_type = get_value_safely(ticker_data_basic, "market") or get_value_safely(ticker_data_basic, "flow")
+        raw_symbols = all_symbols if isinstance(all_symbols, list) else []
 
-            if is_symbol_valid(symbol_name, market_type):
-                valid_symbol_names.append(symbol_name)
-        
-        symbol_names = valid_symbol_names
-        total_symbols_after_filter = len(symbol_names)
-        
-        skipped_count = len(raw_symbol_names) - total_symbols_after_filter
-        logger.info(f"Step 1.3 Completed: Found {len(raw_symbol_names)} raw symbols. {total_symbols_after_filter} VALID symbols remain (Skipped: {skipped_count}).")
-        
-        # تنظیم مجدد start_index
-        if start_index >= total_symbols_after_filter:
+        valid_symbols = []
+        for s in raw_symbols:
+            try:
+                # در این حالت دیگر داده متادیتا از all_symbols نداریم، بنابراین برای market_type یک تیکر سبک بساز
+                try:
+                    tmp_t = tse.Ticker(s)
+                    m_type = safe_get_ticker_attr(tmp_t, 'market') or safe_get_ticker_attr(tmp_t, 'flow')
+                except Exception:
+                    m_type = None
+
+                if is_symbol_valid(s, m_type):
+                    valid_symbols.append(s)
+            except Exception:
+                logger.exception(f"Error evaluating symbol {s}, skipping.")
+
+        total_valid = len(valid_symbols)
+        logger.info(f"Step 1.3: {total_valid} VALID symbols.")
+
+        if start_index >= total_valid:
             start_index = 0
             delete_progress(PROGRESS_FILE)
-        
-        symbols_processed = 0 
-        historical_records_inserted = 0
+
+        processed = 0
         errors = 0
-        
-        current_symbol_count = start_index 
-        
-        # گام ۲: حلقه پردازش اصلی
-        for i in range(start_index, total_symbols_after_filter, batch_size):
-            batch_symbols = symbol_names[i:i + batch_size]
-            current_batch_end_index = i + len(batch_symbols)
+        commit_counter = 0
 
-            logger.info(f"--- Step 2.0: Processing batch (Indices: {i} to {current_batch_end_index-1}) ---")
+        # run in batches
+        for i in range(start_index, total_valid, batch_size):
+            batch = valid_symbols[i:i + batch_size]
+            logger.info(f"--- Batch {i} to {i + len(batch)} ---")
 
-            for symbol_name in batch_symbols:
-                
-                current_symbol_count += 1
-                
+            for idx, sym in enumerate(batch):
+                global_idx = i + idx + 1
                 try:
-                    
-                    logger.info(f"Step 2.1: Fetching full Ticker data for {symbol_name} (Symbol {current_symbol_count}/{total_symbols_after_filter}).")
-                    
-                    # 🔴 حفاظت در برابر کرش کتابخانه (مثل وسمنان)
+                    logger.info(f"Processing {sym} ({global_idx}/{total_valid})...")
+
                     try:
-                        ticker = tse.Ticker(symbol_name)
-                    except Exception as e:
-                         logger.error(f"Skipping symbol {symbol_name} due to library crash (IndexError/etc): {e}")
-                         errors += 1
-                         continue
+                        ticker = tse.Ticker(sym)
+                    except Exception:
+                        logger.warning(f"Skipping {sym}: Ticker init failed.")
+                        errors += 1
+                        continue
 
                     if not getattr(ticker, "index", None):
                         time.sleep(1)
                         try:
-                            ticker = tse.Ticker(symbol_name)
-                        except:
+                            ticker = tse.Ticker(sym)
+                        except Exception:
                             pass
-                        if not getattr(ticker, "index", None):
-                             # به جای Exception، لاگ می‌کنیم و ادامه می‌دهیم
-                             logger.warning(f"Skipping {symbol_name}: Ticker created but Index missing.")
-                             errors += 1
-                             continue
 
-                    # الف) درج Comprehensive
-                    symbol_id = extract_and_insert_symbol_data(session, symbol_name, ticker)
-                    logger.info(f"Step 2.2: Comprehensive data prepared for {symbol_name}.")
-                    
-                    if not symbol_id:
+                    if not getattr(ticker, "index", None):
+                        logger.warning(f"Skipping {sym}: No Index.")
                         errors += 1
                         continue
-                    
-                    # ب) درج Historical و Fundamental
-                    num_hist_records = extract_and_insert_historical_data(session, symbol_id, symbol_name, ticker, client_types_all)
-                    
-                    if num_hist_records >= 0: 
-                        historical_records_inserted += max(0, num_hist_records)
-                        symbols_processed += 1 
-                        if num_hist_records > 0:
-                             logger.info(f"Step 2.3: Data prepared for {symbol_name}.")
-                        else:
-                             logger.warning(f"Step 2.3: No historical records found for {symbol_name}.")
 
-                    elif num_hist_records == -1:
-                         errors += 1
-                         
-                    # Commit دسته‌ای
-                    if symbols_processed > 0 and symbols_processed % commit_batch_size == 0:
-                        session.commit()
-                        logger.info(f"Step 2.4: Committed after {symbols_processed} successful symbols.")
+                    sid = extract_and_insert_symbol_data(session, sym, ticker)
+                    if not sid:
+                        errors += 1
+                        continue
+
+                    res = extract_and_insert_historical_data(session, sid, sym, ticker, client_types)
+                    if res >= 0:
+                        processed += 1
+                    else:
+                        errors += 1
+
+                    commit_counter += 1
+                    if commit_counter >= commit_batch_size:
+                        try:
+                            session.commit()
+                            logger.info(f"Committed at processed={processed}, errors={errors}")
+                        except Exception:
+                            session.rollback()
+                            logger.exception("Commit failed, rollback performed.")
+                        commit_counter = 0
 
                 except Exception as e:
-                    errors += 1
-                    logger.error(f"Failed to process symbol {symbol_name} (Skipping): {e}")
+                    logger.exception(f"Failed {sym}: {e}")
                     session.rollback()
-                    time.sleep(1)
-                    continue
-                
-            # Commit نهایی دسته
-            session.commit()
-            logger.info(f"Step 2.4: Batch committed successfully.")
-            save_progress(PROGRESS_FILE, current_batch_end_index)
-            
-            del batch_symbols
+                    errors += 1
+
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("Commit failed at batch end, rollback performed.")
+
+            save_progress(PROGRESS_FILE, i + len(batch))
             gc.collect()
-            time.sleep(1)
 
-        # گام ۳: اتمام و خلاصه
-        logger.info("Step 3.1: Full rebuild loop finished. Cleaning up progress file.")
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Final commit failed, rollback performed.")
+
         delete_progress(PROGRESS_FILE)
-        end_time = datetime.now()
-        execution_time = (end_time - start_time).total_seconds()
-        
-        logger.info(f"--- FULL REBUILD COMPLETED ---")
-        logger.info(
-            f"Summary: Processed {symbols_processed} valid symbols, "
-            f"Skipped {skipped_count} invalid/rights symbols, "
-            f"{historical_records_inserted} history records. Errors: {errors}."
-        )
-
-        return {
-            "status": "SUCCESS",
-            "symbols_processed_valid": symbols_processed,
-            "symbols_skipped": skipped_count,
-            "historical_records": historical_records_inserted,
-            "total_errors": errors,
-            "execution_time_min": round(execution_time / 60, 2),
-            "timestamp": end_time.isoformat()
-        }
+        elapsed = datetime.now() - start_time
+        logger.info(f"Full rebuild finished in {elapsed}. processed={processed}, errors={errors}")
+        return {"status": "SUCCESS", "processed": processed, "errors": errors, "elapsed": str(elapsed)}
 
     except Exception as e:
-        session.rollback()
-        logger.error(f"Fatal error during rebuild process (Resuming from index {start_index} next time): {e}", exc_info=True)
-        return {"status": "FAILED", "reason": "Fatal System Error", "error_message": str(e), "last_index": start_index}
+        logger.exception(f"Fatal Error: {e}")
+        return {"status": "FAILED", "error": str(e)}
     finally:
-        session.close()
+        try:
+            session.close()
+        except Exception:
+            pass
 
-# ----------------------------
-# توابع export
-# ----------------------------
-__all__ = [
-    "get_session_local",
-    "run_full_rebuild",
-    # ... (سایر توابع)
-]
+
+__all__ = ["get_session_local", "run_full_rebuild"]
