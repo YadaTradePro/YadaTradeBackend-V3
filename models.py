@@ -6,7 +6,7 @@ import uuid
 import json
 from sqlalchemy import UniqueConstraint
 
-from sqlalchemy import Column, Integer, String, Float, DateTime
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date
 
 
 
@@ -566,6 +566,33 @@ class DailySectorPerformance(db.Model):
 
 
 
+
+class DynamicSupportOpportunity(db.Model):
+    """
+    ذخیره سازی نتایج نهایی تحلیل حمایت دینامیک و پول هوشمند برای نمایش یا تاریخچه
+    """
+    __tablename__ = 'dynamic_support_opportunities'
+    id = db.Column(db.Integer, primary_key=True)
+    
+    analysis_date = db.Column(db.Date, default=date.today, nullable=False) # تاریخ انجام تحلیل
+    symbol_id = db.Column(db.String(50), nullable=False)
+    symbol_name = db.Column(db.String(100), nullable=False)
+    
+    current_price = db.Column(db.Float, nullable=False)
+    support_level = db.Column(db.Float, nullable=False)
+    distance_from_support = db.Column(db.Float, nullable=False) # فاصله درصدی از حمایت
+    power_ratio = db.Column(db.Float, nullable=False) # قدرت خریدار حقیقی (که در خروجی قبلی support_slope نامیده می‌شد)
+    
+    # مدیریت داده‌ها
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    
+    # قید یکتایی: جلوگیری از تکرار تحلیل یک نماد در یک روز
+    __table_args__ = (
+        UniqueConstraint('symbol_id', 'analysis_date', name='uq_symbol_date'),
+    )
+
+    def __repr__(self):
+        return f'<DynamicSupportOpportunity {self.symbol_name} on {self.analysis_date}>'
 
 
 
