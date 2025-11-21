@@ -612,7 +612,7 @@ def run_full_rebuild(batch_size: int = 50, commit_batch_size: int = COMMIT_BATCH
                     logger.info(f"Processing {sym} ({global_idx}/{total_valid})...")
 
                     try:
-                        ticker = tse.Ticker(sym)
+                        ticker = tse.Ticker(sym, adjust=True)
                     except Exception:
                         logger.warning(f"Skipping {sym}: Ticker init failed.")
                         errors += 1
@@ -621,7 +621,7 @@ def run_full_rebuild(batch_size: int = 50, commit_batch_size: int = COMMIT_BATCH
                     if not getattr(ticker, "index", None):
                         time.sleep(1)
                         try:
-                            ticker = tse.Ticker(sym)
+                            ticker = tse.Ticker(sym, adjust=True)
                         except Exception:
                             pass
 
