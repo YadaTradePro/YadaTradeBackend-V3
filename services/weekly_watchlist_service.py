@@ -13,7 +13,7 @@ import pandas as pd
 from datetime import datetime, timedelta, date
 import jdatetime
 import uuid
-from sqlalchemy import func, text
+from sqlalchemy import func, text, and_
 import logging
 import json
 import numpy as np
@@ -845,12 +845,13 @@ class WeeklyWatchlistService:
     """
 
     def __init__(self):
-        self.leading_sectors = _get_leading_sectors()
+        # 💡 فرض: تابع _get_leading_sectors تعریف شده است
+        self.leading_sectors = _get_leading_sectors() 
 
     def _get_history_and_tech_data(self, symbol_id, symbol_name, days_back=200):
         # 💡 G-Fix: تبدیل start_date گرگوری به رشته جلالی
-        # این کار کوئری DB را بر اساس نوع داده ستون (رشته جلالی) سازگار می‌کند.
         start_date = (datetime.now().date() - timedelta(days=days_back))
+        # 💡 فرض: تابع convert_gregorian_to_jalali تعریف شده است
         start_jdate_str = convert_gregorian_to_jalali(start_date)
 
         hist_df, tech_df = pd.DataFrame(), pd.DataFrame()
@@ -877,6 +878,7 @@ class WeeklyWatchlistService:
                 hist_df = pd.DataFrame([r.__dict__ for r in hist_records])
                 # 💡 G-Fix: تبدیل jdate به ایندکس زمانی گرگوری
                 hist_df['jdate'] = hist_df['jdate'].astype(str) # اطمینان از اینکه رشته است
+                # 💡 فرض: تابع convert_jalali_to_gregorian_timestamp تعریف شده است
                 hist_df['date'] = hist_df['jdate'].apply(convert_jalali_to_gregorian_timestamp)
                 hist_df.set_index('date', inplace=True)
                 hist_df = hist_df.drop(columns=['_sa_instance_state'], errors='ignore')
@@ -885,6 +887,7 @@ class WeeklyWatchlistService:
                 tech_df = pd.DataFrame([r.__dict__ for r in tech_records])
                 # 💡 G-Fix: تبدیل jdate به ایندکس زمانی گرگوری
                 tech_df['jdate'] = tech_df['jdate'].astype(str) # اطمینان از اینکه رشته است
+                # 💡 فرض: تابع convert_jalali_to_gregorian_timestamp تعریف شده است
                 tech_df['date'] = tech_df['jdate'].apply(convert_jalali_to_gregorian_timestamp)
                 tech_df.set_index('date', inplace=True)
                 tech_df = tech_df.drop(columns=['_sa_instance_state'], errors='ignore')
@@ -913,6 +916,7 @@ class WeeklyWatchlistService:
         # 1. واکشی داده‌ها
         hist_df, tech_df = self._get_history_and_tech_data(symbol_id, symbol_name)
 
+        # 💡 فرض: توابع is_data_sufficient و MIN_REQUIRED_HISTORY_DAYS تعریف شده‌اند
         if not is_data_sufficient(hist_df, MIN_REQUIRED_HISTORY_DAYS):
             logger.warning(f"Insufficient historical data for {symbol_name}.")
             return None
@@ -923,21 +927,26 @@ class WeeklyWatchlistService:
             return None
             
         # 2. تعیین سنتیمنت بازار
+        # 💡 فرض: تابع _get_market_sentiment تعریف شده است
         market_sentiment = _get_market_sentiment() 
         
         # 3. اجرای تمام فیلترها
         
         # 3.1. Technical Filters
+        # 💡 فرض: تابع _check_technical_filters تعریف شده است
         tech_filters, tech_reasons = _check_technical_filters(hist_df, tech_df, market_sentiment)
         
         # 3.2. Market/Volatility Filters
+        # 💡 فرض: تابع _check_market_condition_filters تعریف شده است
         market_filters, market_reasons = _check_market_condition_filters(hist_df, tech_df)
         
         # 3.3. Smart Money Filters
+        # 💡 فرض: تابع _check_smart_money_filters تعریف شده است
         money_filters, money_reasons = _check_smart_money_filters(hist_df)
         
         # 3.4. Power Thrust Filter
         # 💡 G-Fix: اطمینان از ارسال close_ser صحیح
+        # 💡 فرض: تابع _get_close_series_from_hist_df و _check_power_thrust_signal تعریف شده‌اند
         close_ser = _get_close_series_from_hist_df(hist_df) 
         power_filters, power_reasons = _check_power_thrust_signal(hist_df, close_ser)
         
@@ -945,15 +954,19 @@ class WeeklyWatchlistService:
         last_tech = tech_df.iloc[-1]
         last_close = close_ser.iloc[-1]
         # 📢 تغییر: ارسال دیتافریم تاریخی (hist_df) برای محاسبه دینامیک حمایت
+        # 💡 فرض: تابع _check_static_levels_filters تعریف شده است
         static_filters, static_reasons = _check_static_levels_filters(hist_df, last_tech, last_close)
         
         # 3.6. Sector Strength Filter
+        # 💡 فرض: تابع _check_sector_strength_filter تعریف شده است
         sector_filters, sector_reasons = _check_sector_strength_filter(symbol_data_rec.group_name, self.leading_sectors)
 
         # 3.7. Simple Fundamental Filter
+        # 💡 فرض: تابع _check_simple_fundamental_filters تعریف شده است
         fundamental_filters, fundamental_reasons = _check_simple_fundamental_filters(symbol_data_rec)
 
         # 3.8. ML Prediction Filter
+        # 💡 فرض: تابع _check_ml_prediction_filter تعریف شده است
         ml_filters, ml_reasons = _check_ml_prediction_filter(symbol_id)
         
         # 4. تجمیع نتایج
@@ -971,6 +984,7 @@ class WeeklyWatchlistService:
         }
 
         # 5. محاسبه امتیاز نهایی (Score Calculation)
+        # 💡 فرض: ثابت FILTER_WEIGHTS تعریف شده است
         total_score = sum(
             FILTER_WEIGHTS.get(f, {}).get("weight", 0) for f in all_satisfied_filters
         )
@@ -1032,8 +1046,8 @@ class WeeklyWatchlistService:
         ذخیره نتیجه آنالیز در جدول WeeklyWatchlistResult.
         """
         # 💡 FIX: تعریف متغیر today_gregorian_date برای رفع NameError
-        # فرض می‌شود datetime از بالای فایل ایمپورت شده است: from datetime import datetime
         today_gregorian_date = datetime.now().date() 
+        # 💡 فرض: تابع get_today_jdate_str تعریف شده است
         today_jdate = get_today_jdate_str()
         
         try:
@@ -1042,7 +1056,8 @@ class WeeklyWatchlistService:
             # جستجوی رکورد موجود برای امروز
             existing_record = db.session.query(WeeklyWatchlistResult).filter(
                 WeeklyWatchlistResult.symbol_id == result.symbol_id,
-                WeeklyWatchlistResult.jentry_date == today_jdate,
+                # 💡 FIX: اصلاح jentry_date به jdate (فیلد موجود در مدل شما)
+                WeeklyWatchlistResult.jdate == today_jdate, 
                 WeeklyWatchlistResult.status == 'Open'
             ).first()
 
@@ -1066,9 +1081,9 @@ class WeeklyWatchlistService:
                     reason=result.reason,
                     entry_price=result.entry_price,
 
-                    # 💥 FIX: استفاده از متغیر تعریف شده
+                    # 💥 FIX: استفاده از متغیر تعریف شده و فیلد صحیح (jdate)
                     entry_date=today_gregorian_date, 
-                    jentry_date=today_jdate,
+                    jdate=today_jdate, # <-- فیلد صحیح در مدل
                     status='Open', # تمام سیگنال‌های هفتگی باز تلقی می‌شوند
                     probability_percent=result.probability_percent
                 )
@@ -1087,7 +1102,9 @@ class WeeklyWatchlistService:
         تابع بسته‌بندی برای پردازش یک نماد و مدیریت خطاها و لاگینگ.
         """
         # 💡 G-Fix: اضافه کردن قیمت ورود (Entry Price)
+        # 💡 فرض: تابع _get_history_and_tech_data در بالا تعریف شده است
         hist_df, _ = self._get_history_and_tech_data(symbol_data_rec.symbol_id, symbol_data_rec.symbol_name)
+        # 💡 فرض: تابع _get_close_series_from_hist_df تعریف شده است
         close_ser = _get_close_series_from_hist_df(hist_df)
         entry_price = close_ser.iloc[-1] if not close_ser.empty else None
         
@@ -1115,11 +1132,14 @@ class WeeklyWatchlistService:
             analysis_result.probability_percent = None
 
         if analysis_result.outlook in ["Strong Buy", "Buy"]:
-            #self._save_result(analysis_result)
+            # self._save_result(analysis_result) <-- این خط حذف شد و به run_watchlist_generation منتقل شد
             return analysis_result
         
         return None
 
+    # -----------------------------------------------------------------
+    # --- تابع اصلی تولید واچ لیست (با اعمال فیلتر صندوق‌ها) ---
+    # -----------------------------------------------------------------
     def run_watchlist_generation(self, parallel=True, max_workers=8):
         """
         فرایند اصلی تولید واچ لیست.
@@ -1133,22 +1153,40 @@ class WeeklyWatchlistService:
         # 💡 G-Fix: گرفتن کانتکست اپلیکیشن برای استفاده در پردازش موازی
         app = current_app._get_current_object()
         
-        # --- Step 1: واکشی لیست نمادها ---
+        # --- Step 1: واکشی لیست نمادهای معتبر (با اعمال فیلتر صندوق‌ها) ---
         try:
-            logger.info("Fetching ALL symbols from ComprehensiveSymbolData table...")
-            active_symbols = db.session.query(ComprehensiveSymbolData).all()
+            logger.info("Fetching valid symbols from ComprehensiveSymbolData table (excluding funds)...")
             
-            # 💡 G-Fix: اطمینان از وجود symbol_id و symbol_name
+            # --- لیست کلمات کلیدی برای حذف صندوق‌ها و اوراق ---
+            EXCLUDE_KEYWORDS = [
+                'صندوق', 'سرمایه گذاری قابل معامله', 'اوراق', 'تسهیلات', 'اجاره', 
+                'مشارکت', 'گواهی', 'کالا', 'انرژی', 'اختیار', 'آتی', 'سلف', 'بدهی', 
+                'ریالی', 'ارزی', 'قابل انتقال'
+            ]
+
+            # ساخت شروط فیلترینگ (NOT LIKE)
+            conditions = []
+            for kw in EXCLUDE_KEYWORDS:
+                # فیلتر بر اساس نام صنعت، گروه و نام شرکت
+                conditions.append(~ComprehensiveSymbolData.industry.like(f'%{kw}%'))
+                conditions.append(~ComprehensiveSymbolData.group_name.like(f'%{kw}%'))
+                conditions.append(~ComprehensiveSymbolData.company_name.like(f'%{kw}%'))
+            
+            # اجرای کوئری با اعمال تمام شروط
+            query = db.session.query(ComprehensiveSymbolData).filter(and_(*conditions))
+            active_symbols = query.all()
+            
+            # 💡 G-Fix: اطمینان از وجود symbol_id و symbol_name (این فیلتر همچنان لازم است)
             active_symbols = [s for s in active_symbols if s.symbol_id and s.symbol_name]
             
             if not active_symbols:
-                logger.warning("No symbols found in the ComprehensiveSymbolData table at all.")
+                logger.warning("No VALID symbols found after filtering funds and non-stocks.")
                 return [] 
                 
-            logger.info(f"Found {len(active_symbols)} total symbols to analyze.")
+            logger.info(f"Found {len(active_symbols)} valid symbols to analyze after filtering.")
         
         except Exception as e:
-            logger.error(f"Error fetching symbols: {e}")
+            logger.error(f"Error fetching and filtering symbols: {e}")
             return [] 
 
         # --- Step 2: پردازش موازی یا ترتیبی (فقط تولید نتیجه، بدون ذخیره) ---
@@ -1173,7 +1211,7 @@ class WeeklyWatchlistService:
         # حذف نتایج None (سیگنال‌های ضعیف)
         successful_results = [r for r in results if r is not None]
         
-        logger.info(f"Found {len(successful_results)} successful signals before filtering.")
+        logger.info(f"Found {len(successful_results)} successful signals before final filtering.")
 
         # مرتب‌سازی بر اساس امتیاز (Score) به صورت نزولی
         # 💡 G-Sort: از 'score' استفاده می‌کنیم، اگر وجود نداشت -1 فرض می‌شود
@@ -1198,9 +1236,6 @@ class WeeklyWatchlistService:
         return top_results_to_save
 
 
-
-
-
     def _process_one_symbol_with_context(self, symbol, app):
         """
         یک Wrapper برای اجرای _process_one_symbol در یک Application Context جدید.
@@ -1215,75 +1250,73 @@ class WeeklyWatchlistService:
                 result = self._process_one_symbol(symbol)
             finally:
                 # 2. 🚨 G-Fix: حذف صریح نشست دیتابیس باید قبل از خروج از بلوک with انجام شود.
-                # این کار از خطای 'Working outside of application context' جلوگیری می‌کند.
                 db.session.remove() 
         return result
 
 
-
-
-
     def get_latest_watchlist(self, limit=10, include_history=False):
-            """
-            بازگرداندن آخرین واچ لیست (سیگنال‌های 'Open' با بالاترین امتیاز).
-            """
-            logger.info(f"Fetching latest watchlist results (Limit: {limit}, Include History: {include_history})")
+        """
+        بازگرداندن آخرین واچ لیست (سیگنال‌های 'Open' با بالاترین امتیاز).
+        """
+        logger.info(f"Fetching latest watchlist results (Limit: {limit}, Include History: {include_history})")
         
-            # --- Step 1: تنظیم کوئری پایه و اعمال فیلتر (FIX: فیلتر قبل از Limit/Order) ---
-            query = db.session.query(WeeklyWatchlistResult)
+        # --- Step 1: تنظیم کوئری پایه و اعمال فیلتر (FIX: فیلتر قبل از Limit/Order) ---
+        query = db.session.query(WeeklyWatchlistResult)
         
-            # 💡 FIX: فیلتر کردن بر اساس وضعیت (Open) را قبل از مرتب سازی و محدودیت اعمال می کنیم.
-            if not include_history:
-                # تنها سیگنال‌های فعال (Open) را برمی‌گرداند.
-                query = query.filter(WeeklyWatchlistResult.status == 'Open')
+        # 💡 FIX: فیلتر کردن بر اساس وضعیت (Open) را قبل از مرتب سازی و محدودیت اعمال می کنیم.
+        if not include_history:
+            # تنها سیگنال‌های فعال (Open) را برمی‌گرداند.
+            query = query.filter(WeeklyWatchlistResult.status == 'Open')
 
-            # اعمال مرتب‌سازی و محدودیت
-            query = query.order_by(
-                WeeklyWatchlistResult.score.desc(),
-                WeeklyWatchlistResult.jentry_date.desc()
-            ).limit(limit)
+        # اعمال مرتب‌سازی و محدودیت
+        query = query.order_by(
+            WeeklyWatchlistResult.score.desc(),
+            # 💡 FIX: اصلاح jentry_date به jdate (فیلد موجود در مدل شما)
+            WeeklyWatchlistResult.jdate.desc()
+        ).limit(limit)
 
-            # --- Step 2: اجرای کوئری ---
-            try:
-                results = query.all()
-            except Exception as e:
-                logger.error(f"Error fetching latest watchlist: {e}")
-                return []
+        # --- Step 2: اجرای کوئری ---
+        try:
+            results = query.all()
+        except Exception as e:
+            logger.error(f"Error fetching latest watchlist: {e}")
+            return []
 
-            # --- Step 3: دریافت نام کامل شرکت‌ها ---
-            symbol_ids = [r.symbol_id for r in results]
-            company_name_map = {}
-            if symbol_ids:
-                company_name_records = db.session.query(
-                    ComprehensiveSymbolData.symbol_id,
-                    ComprehensiveSymbolData.company_name
-                ).filter(ComprehensiveSymbolData.symbol_id.in_(symbol_ids)).all()
+        # --- Step 3: دریافت نام کامل شرکت‌ها ---
+        symbol_ids = [r.symbol_id for r in results]
+        company_name_map = {}
+        if symbol_ids:
+            company_name_records = db.session.query(
+                ComprehensiveSymbolData.symbol_id,
+                ComprehensiveSymbolData.company_name
+            ).filter(ComprehensiveSymbolData.symbol_id.in_(symbol_ids)).all()
             
-                company_name_map = {sid: cname for sid, cname in company_name_records}
+            company_name_map = {sid: cname for sid, cname in company_name_records}
 
-            # --- Step 4: ساخت خروجی نهایی ---
-            output_stocks = []
-            for r in results:
-                output_stocks.append({
-                    "signal_unique_id": r.signal_unique_id,
-                    "symbol_id": r.symbol_id,
-                    "symbol_name": r.symbol_name,
-                    "company_name": company_name_map.get(r.symbol_id, r.symbol_name),
-                    "outlook": r.outlook,
-                    "reason": r.reason,
-                    "entry_price": r.entry_price,
-                    "jentry_date": r.jentry_date,
-                    "exit_price": r.exit_price,
-                    "jexit_date": r.jexit_date,
-                    "profit_loss_percentage": r.profit_loss_percentage,
-                    "status": r.status,
-                    "probability_percent": getattr(r, "probability_percent", None),
-                    "score": getattr(r, "score", None)
-                })
+        # --- Step 4: ساخت خروجی نهایی ---
+        output_stocks = []
+        for r in results:
+            output_stocks.append({
+                "signal_unique_id": r.signal_unique_id,
+                "symbol_id": r.symbol_id,
+                "symbol_name": r.symbol_name,
+                "company_name": company_name_map.get(r.symbol_id, r.symbol_name),
+                "outlook": r.outlook,
+                "reason": r.reason,
+                "entry_price": r.entry_price,
+                # 💡 FIX: اصلاح jentry_date به jdate
+                "jentry_date": r.jdate, 
+                "exit_price": r.exit_price,
+                "jexit_date": r.jexit_date,
+                "profit_loss_percentage": r.profit_loss_percentage,
+                "status": r.status,
+                "probability_percent": getattr(r, "probability_percent", None),
+                "score": getattr(r, "score", None)
+            })
 
-            # --- Step 5: مرتب‌سازی بر اساس امتیاز ---
-            # این مرتب‌سازی دوباره برای اطمینان از خروجی مرتب و سازگار با خروجی API است.
-            output_stocks.sort(key=lambda x: x.get('score') if x.get('score') is not None else -100, reverse=True)
+        # --- Step 5: مرتب‌سازی بر اساس امتیاز ---
+        # این مرتب‌سازی دوباره برای اطمینان از خروجی مرتب و سازگار با خروجی API است.
+        output_stocks.sort(key=lambda x: x.get('score') if x.get('score') is not None else -100, reverse=True)
 
-            logger.info(f"Successfully retrieved {len(output_stocks)} watchlist results.")
-            return output_stocks
+        logger.info(f"Successfully retrieved {len(output_stocks)} watchlist results.")
+        return output_stocks
