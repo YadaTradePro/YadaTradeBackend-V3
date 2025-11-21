@@ -82,6 +82,7 @@ def create_app(test_config=None):
     from routes.performance import performance_ns
     from routes.market_data import market_overview_ns
     from routes.combined_analysis_route import SymbolAnalysis_ns
+    from routes.dynamic_support import dynamic_support_ns
 
     # اضافه‌کردن namespace‌ها به Swagger
     api.add_namespace(auth_ns, path="/auth")
@@ -92,6 +93,7 @@ def create_app(test_config=None):
     api.add_namespace(weekly_watchlist_ns, path="/weekly_watchlist")
     api.add_namespace(potential_queues_ns, path="/potential_queues")
     api.add_namespace(performance_ns, path="/performance")
+    api.add_namespace(dynamic_support_ns, path="/dynamic_support")
 
     # -----------------------------------------------------------------------------
     # ⚙️ Namespace ساده برای Settings (در آینده توسعه می‌یابد)
