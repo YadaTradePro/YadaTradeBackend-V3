@@ -167,6 +167,16 @@ FILTER_WEIGHTS = {
     "Break_Below_Static_Support": { 
         "weight": -8, 
         "description": "شکست حمایت اصلی: قیمت به زیر سطح حمایت استاتیک کلیدی سقوط کرده که نشانه ضعف شدید یا تغییر روند است."
+    },
+    
+    # --- 💡 NEW FILTERS ADDED HERE (درخواست شما) ---
+    "Price_Near_50Day_High": {
+        "weight": -4, # جریمه متوسط
+        "description": "جریمه نزدیکی به سقف ۵۰ روزه: قیمت بسیار نزدیک به سقف اخیر است (کمتر از ۵٪ فاصله) و پتانسیل اصلاح دارد."
+    },
+    "Price_Far_From_Static_Support_160D": {
+        "weight": -8, # جریمه سنگین
+        "description": "جریمه فاصله زیاد از حمایت ۱۶۰ روزه: قیمت بیش از ۲۵٪ بالاتر از حمایت استاتیک ۱۶۰ روزه قرار دارد (خطر حباب)."
     }
 }
 
@@ -255,6 +265,7 @@ def _check_market_condition_filters(hist_df, tech_df):
     """
     Checks for individual stock conditions like overbought state 
     or consolidation.
+    Also includes the NEW 50-day High Proximity Penalty.
     """ 
     satisfied_filters, reason_parts = [], {"market_condition": []}
     if not is_data_sufficient(tech_df, 1) or not is_data_sufficient(hist_df, MIN_REQUIRED_HISTORY_DAYS):
@@ -294,14 +305,14 @@ def _check_market_condition_filters(hist_df, tech_df):
         stretch_percent = ((last_close - sma50) / sma50) * 100
         is_uptrend = sma20 > sma50
 
-        # 💡 G-2: جریمه فاصله زیاد (شرط 
+        # 💡 G-2: جریمه فاصله زیاد (شرط) 
         if stretch_percent > 15:
             satisfied_filters.append("Price_Too_Stretched_From_SMA50")
             reason_parts["market_condition"].append(
                 f"Price is overextended ({stretch_percent:.1f}%) from SMA50."
             )
         
-        # 💡 G-2: پاداش پولبک (شرط 
+        # 💡 G-2: پاداش پولبک (شرط) 
         elif is_uptrend and 0 <= stretch_percent <= 3:
             satisfied_filters.append("Buy_The_Dip_SMA50")
             reason_parts["market_condition"].append(
@@ -311,14 +322,27 @@ def _check_market_condition_filters(hist_df, tech_df):
     # --- Check 4: Consolidation Pattern (Reward) ---
     if hasattr(last_tech, 'ATR'):
         atr_series = pd.to_numeric(tech_df['ATR'].dropna())
-
         if len(atr_series) > 30:
             recent_atr_avg = atr_series.tail(10).mean()
             historical_atr_avg = atr_series.tail(30).mean()
             if recent_atr_avg < (historical_atr_avg * 0.7):
                 satisfied_filters.append("Consolidation_Breakout_Candidate")
                 reason_parts["market_condition"].append(
-                    "Stock is in a low-volatility consolidation phase."
+                     "Stock is in a low-volatility consolidation phase."
+                )
+
+    # --- 💡 NEW FILTER 1: High Price Proximity Penalty (50-day High) ---
+    # هدف: جریمه نمادهایی که به سقف ۵۰ روزه بسیار نزدیک هستند (Gap > -5%)
+    if len(close_ser) >= 50:
+        recent_high_50d = close_ser.tail(50).max()
+        if recent_high_50d > 0:
+            gap_percent = ((last_close - recent_high_50d) / recent_high_50d) * 100
+            
+            # اگر فاصله (Gap) بیشتر از -5% باشد (یعنی مثلا -3%، -1% یا 0%)
+            if gap_percent > -5:
+                satisfied_filters.append("Price_Near_50Day_High")
+                reason_parts["market_condition"].append(
+                    f"Penalty: Price is too close to 50-day high (Gap: {gap_percent:.1f}%)."
                 )
 
     return satisfied_filters, reason_parts
@@ -335,7 +359,7 @@ def is_data_sufficient(data_df, min_len):
 def convert_jalali_to_gregorian_timestamp(jdate_str):
     """
     Converts a Jalali date string (YYYY-MM-DD) to a pandas Timestamp (Gregorian).
-"""
+    """
     if pd.notna(jdate_str) and isinstance(jdate_str, str):
         try:
             jy, jm, jd = map(int, jdate_str.split('-'))
@@ -445,7 +469,6 @@ def _check_oscillator_signals(tech_df: pd.DataFrame, close_ser: pd.Series, techn
 
     # --- RSI Positive Divergence ---
     rsi_series = tech_df['RSI'] if 'RSI' in tech_df.columns else pd.Series(dtype=float)
-    
     if _find_divergence(close_ser, rsi_series, DIVERGENCE_LOOKBACK, 'positive_rsi'):
         current_rsi = _get_attr_safe(technical_rec, 'RSI')
         satisfied_filters.append("RSI_Positive_Divergence")
@@ -569,7 +592,7 @@ def _check_volume_signals(hist_df, tech_df, technical_rec, close_ser):
         if last_hist['high'] == last_hist['low']:
             is_locked_market = True
             reason_parts["technical"].append(f"Note: Market was locked (High == Low). Volume spikes ignored.")
-    
+     
     # 1. High Volume On Up Day (Z-Score)
     if 'volume' in hist_df.columns and len(hist_df) >= 20 and len(close_ser) > 1:
         volume_z_score = calculate_z_score(pd.to_numeric(hist_df['volume'], errors='coerce').dropna().iloc[-20:])
@@ -624,7 +647,6 @@ def _check_technical_filters(hist_df, tech_df, market_sentiment: str):
         # 💡 G-Fix: اصلاح فراخوانی تابع _check_oscillator_signals برای ارسال tech_df کامل
         if func == _check_oscillator_signals:
              satisfied, reasons = func(tech_df, close_ser, technical_rec, prev_tech_rec)
-        
         elif func == _check_trend_signals:
              satisfied, reasons = func(technical_rec, prev_tech_rec, last_close_val, market_sentiment)
          
@@ -709,6 +731,7 @@ def _check_power_thrust_signal(hist_df, close_ser):
     if is_locked_market:
         return satisfied_filters, reason_parts # سیگنال قدرت در صف خرید/فروش، معتبر نیست
 
+    
     # --- شرط ۱: روز معاملاتی مثبت ---
     is_up_day = close_ser.iloc[-1] > close_ser.iloc[-2]
     if not is_up_day:
@@ -805,9 +828,18 @@ def _check_static_levels_filters(hist_df: pd.DataFrame, technical_rec: pd.Series
             satisfied_filters.append("Static_Resistance_Broken")
             reason_parts["static_levels"].append(f"Static resistance broken ({static_resistance:,.0f}, {distance_from_resistance:.1f}% above).")
 
-    # اگر حمایت دینامیک پیدا نشده بود، و تابع قبلی حمایت از پیش محاسبه شده داشت، می‌توانید در اینجا
-    # آن را اضافه کنید، اما چون گفتید ستون را ندارید، فعلاً از آن صرف‌نظر می‌کنیم.
-    
+    # --- 💡 NEW FILTER 2: Static Support Distance Penalty (160D) ---
+    # هدف: جریمه نمادهایی که فاصله بسیار زیادی (بیش از ۲۵٪) از حمایت استاتیک ۱۶۰ روزه گرفته‌اند
+    static_support_160 = calculate_static_support(hist_df, lookback_period=160)
+    if static_support_160 is not None and static_support_160 > 0:
+        diff_percent_160 = ((last_close_val - static_support_160) / static_support_160) * 100
+        
+        if diff_percent_160 > 25:
+            satisfied_filters.append("Price_Far_From_Static_Support_160D")
+            reason_parts["static_levels"].append(
+                f"Penalty: Price is {diff_percent_160:.1f}% above 160-day static support (Risk of bubble)."
+            )
+
     return satisfied_filters, reason_parts
 
 def _check_ml_prediction_filter(symbol_id):
@@ -862,6 +894,7 @@ class WeeklyWatchlistService:
         try:
             # --- واکشی داده‌های تاریخی (HistoricalData) ---
             # فیلتر بر اساس رشته جلالی
+        
             hist_records = local_session.query(HistoricalData).filter(
                 HistoricalData.symbol_id == symbol_id,
                 HistoricalData.jdate >= start_jdate_str 
@@ -1143,7 +1176,6 @@ class WeeklyWatchlistService:
     def run_watchlist_generation(self, parallel=True, max_workers=8):
         """
         فرایند اصلی تولید واچ لیست.
-        
         این تابع نمادها را تحلیل کرده، نتایج را بر اساس امتیاز (Score) مرتب می‌کند،
         و فقط 8 سیگنال برتر را در جدول WeeklyWatchlistResult ذخیره می‌نماید.
         """
