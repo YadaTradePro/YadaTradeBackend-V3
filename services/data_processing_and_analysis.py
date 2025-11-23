@@ -11,7 +11,7 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union
 from contextlib import contextmanager
-import threading 
+import threading
 
 from sqlalchemy import func, distinct, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -23,14 +23,14 @@ from flask import current_app
 # --- وابستگی‌های پروژه ---
 from extensions import db
 from models import (
-    HistoricalData, 
-    TechnicalIndicatorData, 
-    CandlestickPatternDetection, 
+    HistoricalData,
+    TechnicalIndicatorData,
+    CandlestickPatternDetection,
     ComprehensiveSymbolData
 )
 
 from services.technical_analysis_utils import (
-        calculate_all_indicators, 
+        calculate_all_indicators,
         check_candlestick_patterns
     )
 
@@ -67,7 +67,7 @@ def _get_session_local() -> sessionmaker:
             except Exception as e:
                 logger.error(f"❌ امکان اتصال به db.engine برای ساخت SessionLocal وجود ندارد: {e}", exc_info=True)
                 raise RuntimeError(f"امکان مقداردهی اولیه SessionLocal وجود ندارد: {e}")
-        
+            
         return SessionLocal
 
 
@@ -75,7 +75,6 @@ def _get_session_local() -> sessionmaker:
 def session_scope(external_session: Optional[Session] = None) -> Session:
     """
     مدیریت هوشمند Session برای استفاده در Flask-context یا خارج از آن.
-    ⚠️ توجه: این context manager دیگر Commit نهایی را برای Sessionهای خارجی انجام نمی‌دهد.
     """
     session = None
     try:
@@ -95,7 +94,6 @@ def session_scope(external_session: Optional[Session] = None) -> Session:
             yield session
             
             # 🚨 تنها زمانی Commit می‌کنیم که خودمان Session را ساخته باشیم (نه Session ورودی از Flask)
-            # 💡 این Commit نهایی، تغییرات ایجاد شده در run_technical_analysis/run_candlestick_detection را ثبت می‌کند
             logger.debug("Committing final local session.")
             session.commit() # 👈 مدیریت خودکار Commit نهایی
             
@@ -111,7 +109,7 @@ def session_scope(external_session: Optional[Session] = None) -> Session:
 
 
 # -----------------------------------------------------------
-# توابع کمکی مدیریت حافظه (بدون تغییر)
+# توابع کمکی مدیریت حافظه
 # -----------------------------------------------------------
 
 def check_memory_usage_mb() -> float:
@@ -136,6 +134,69 @@ def cleanup_memory():
             logger.warning(f"⚠️ مصرف حافظه بالا: {current_memory:.2f} MB")
     except Exception as e:
         logger.debug(f"خطا در پاکسازی حافظه: {e}")
+
+
+# -----------------------------------------------------------
+# توابع جدید مدیریت دیتابیس (پاکسازی و بهینه‌سازی)
+# -----------------------------------------------------------
+
+def clear_and_vacuum_table(session: Session, model_class: Any):
+    """
+    پاک کردن کامل محتوای یک جدول (Delete) و سپس اجرای بهینه‌سازی (VACUUM/OPTIMIZE)
+    🚨 این تابع پس از حذف، یک Commit صریح انجام می‌دهد تا فضای دیسک را آزاد کند.
+    """
+    table_name = model_class.__tablename__
+    logger.info(f"🗑️ شروع عملیات پاکسازی و بهینه‌سازی برای جدول: **{table_name}**")
+
+    try:
+        # 1. حذف کامل رکوردها
+        delete_count = session.query(model_class).delete()
+        logger.info(f"✅ {delete_count} رکورد از جدول {table_name} حذف شد.")
+        
+        # 2. ثبت حذف (Commit صریح) - ضروری برای آزاد شدن فضای دیسک قبل از درج مجدد
+        session.commit()
+        logger.debug(f"💾 Commit حذف رکوردهای جدول {table_name} انجام شد.")
+        
+        # 3. اجرای VACUUM/OPTIMIZE برای بازپس‌گیری فضای آزاد شده
+        dialect = session.bind.dialect.name
+        
+        if dialect == 'postgresql':
+            # VACUUM FULL در PostgreSQL نیاز به Commit جداگانه دارد و زمان‌بر است.
+            # برای حفظ تراکنش، از VACUUM معمولی استفاده می‌کنیم و فقط Delete را Commit می‌کنیم.
+            try:
+                # استفاده از کانکشن مجزا برای VACUUM FULL
+                engine = session.bind
+                connection = engine.raw_connection()
+                try:
+                    cursor = connection.cursor()
+                    cursor.execute(f"VACUUM FULL ANALYZE {table_name};")
+                    connection.commit()
+                    logger.info(f"✅ PostgreSQL **VACUUM FULL ANALYZE** بر روی {table_name} اجرا شد (در کانکشن مجزا).")
+                finally:
+                    connection.close()
+            except Exception as e:
+                 logger.error(f"❌ خطای VACUUM FULL در PostgreSQL: {e}")
+                 # در صورت شکست VACUUM، ادامه می‌دهیم.
+        
+        elif dialect in ('mysql', 'sqlite'):
+            with session.bind.begin() as connection:
+                if dialect == 'mysql':
+                    optimize_command = text(f"OPTIMIZE TABLE {table_name};")
+                    connection.execute(optimize_command)
+                    logger.info(f"✅ MySQL **OPTIMIZE TABLE** بر روی {table_name} اجرا شد.")
+                elif dialect == 'sqlite':
+                    vacuum_command = text("VACUUM;")
+                    connection.execute(vacuum_command)
+                    logger.info(f"✅ SQLite **VACUUM** اجرا شد.")
+        else:
+            logger.warning(f"⚠️ بهینه‌سازی پایگاه داده برای {dialect} پشتیبانی نمی‌شود.")
+
+        logger.info(f"🎉 عملیات پاکسازی و بهینه‌سازی جدول {table_name} با موفقیت به پایان رسید.")
+
+    except SQLAlchemyError as e:
+        logger.error(f"❌ خطای SQLAlchemy در پاکسازی یا بهینه‌سازی جدول {table_name}: {e}", exc_info=True)
+        session.rollback()
+        raise
 
 # -----------------------------------------------------------
 # تابع ذخیره‌سازی نتایج تحلیل تکنیکال
@@ -236,7 +297,7 @@ def save_technical_indicators(db_session: Session, symbol_id: Union[int, str], d
 
 
 # -----------------------------------------------------------
-# تابع اصلی اجرای تحلیل تکنیکال
+# تابع اصلی اجرای تحلیل تکنیکال (با اضافه شدن پاکسازی و Vacuum)
 # -----------------------------------------------------------
 
 def run_technical_analysis(
@@ -247,12 +308,16 @@ def run_technical_analysis(
 ) -> Tuple[int, str]:
     """
     اجرای تحلیل تکنیکال در بچ‌های کوچک.
+    🔄 ابتدا جدول TechnicalIndicatorData را کامل پاک می‌کند و VACUUM می‌کند.
     """
     # 💡 اگر session ورودی داده نشده، از session_scope استفاده کن، در غیر این صورت، از session ورودی استفاده کن.
     # این ساختار تضمین می‌کند که session_scope Commit/Rollback/Close را مدیریت کند.
     with session_scope(external_session=db_session) as session:
         try:
             logger.info("📈 شروع تحلیل تکنیکال...")
+
+            # 💥 بخش جدید: پاکسازی و بهینه‌سازی (TechnicalIndicatorData)
+            clear_and_vacuum_table(session, TechnicalIndicatorData)
 
             # ⚙️ بخش یافتن نمادها (بدون تغییر)
             independent_session = None
@@ -329,18 +394,14 @@ def run_technical_analysis(
                     except Exception as e:
                         error_count += 1
                         logger.error(f"❌ خطا در تحلیل نماد {symbol_id}: {e}", exc_info=True)
-                        # 💡 حذف session.rollback() در اینجا: 
-                        # برای جلوگیری از رول‌بک شدن کل بچ در اثر یک خطای جزئی در یک نماد خاص
-                        # اگر خطای جدی رخ دهد، Commit بچه‌ای یا Commit نهایی آن را مدیریت خواهد کرد.
 
-                # 💥 اصلاح حیاتی: Commit بچه‌ای
+                # 💥 Commit بچه‌ای
                 try:
                     session.commit() # 👈 Commit پس از پردازش موفقیت آمیز تمام نمادهای بچ
                     logger.info(f"💾 بچ {i // batch_size + 1} با موفقیت Commit شد.")
                 except Exception as e:
                     session.rollback() # اگر Commit بچه‌ای شکست خورد، Rollback کن
                     logger.error(f"❌ خطای Commit در بچ {i // batch_size + 1}: {e}. Rollback شد.", exc_info=True)
-                    error_count += (len(batch_symbols) - success_count) # رکوردهایی که Commit نشدند را به خطا اضافه کن
 
                 del df
                 del historical_data
@@ -357,7 +418,7 @@ def run_technical_analysis(
 
 
 # -----------------------------------------------------------
-# تابع اصلی اجرای تشخیص الگوهای شمعی
+# تابع اصلی اجرای تشخیص الگوهای شمعی (با اضافه شدن Vacuum)
 # -----------------------------------------------------------
 
 def run_candlestick_detection(
@@ -367,20 +428,14 @@ def run_candlestick_detection(
 ) -> int:
     """
     اجرای تشخیص الگوهای شمعی.
+    🔄 ابتدا جدول CandlestickPatternDetection را کامل پاک می‌کند و VACUUM می‌کند.
     """
     with session_scope(external_session=db_session) as session:
         try:
             logger.info("🕯️ شروع تشخیص الگوهای شمعی...")
             
-            # 1. پاک کردن COMPLETE تمام داده‌های قبلی جدول
-            # 💡 توجه: حذف در اینجاست، اما Commit آن در انتهای session_scope اتفاق می‌افتد.
-            # اگر می‌خواهید حذف فوراً ثبت شود (که ریسک Rollback شدن کل فرآیند را افزایش می‌دهد)، 
-            # باید در اینجا session.commit() کنید. برای حفظ ساختار فعلی، به صورت زیر عمل می‌کنیم:
-            logger.info("🗑️ در حال پاک کردن تمام داده‌های قبلی جدول candlestick_pattern_detection...")
-            session.query(CandlestickPatternDetection).delete()
-            # 🚨 Commit موقت برای ثبت حذف (اختیاری، اما توصیه می‌شود):
-            # اگرچه کل فرآیند در یک Transaction است، Commit موقت می‌تواند عملیات حذف را تثبیت کند.
-            # برای ساده‌سازی و جلوگیری از Commitهای اضافه، از Commit در انتهای session_scope استفاده می‌کنیم.
+            # 💥 بخش جدید: پاکسازی و بهینه‌سازی (CandlestickPatternDetection)
+            clear_and_vacuum_table(session, CandlestickPatternDetection)
             
             # ⚙️ بخش یافتن نمادها (بدون تغییر)
             independent_session = None
@@ -462,7 +517,7 @@ def run_candlestick_detection(
                     logger.error(f"❌ خطا در تشخیص الگوهای شمعی برای نماد {symbol_id}: {e}", exc_info=True)
             
             logger.info(f"✅ تشخیص الگوهای شمعی برای {success_count} نماد (با {len(records_to_insert)} الگو) انجام شد.")
-                    
+                        
             # 3. ذخیره نتایج در دیتابیس
             if records_to_insert:
                 logger.info(f"💾 در حال درج {len(records_to_insert)} رکورد جدید...")
