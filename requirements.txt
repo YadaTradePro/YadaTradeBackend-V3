@@ -33,3 +33,4 @@ pathlib
 honcho
 beautifulsoup4
 ta
+tabulate
