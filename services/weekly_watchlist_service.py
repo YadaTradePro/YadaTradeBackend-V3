@@ -1090,7 +1090,7 @@ class WeeklyWatchlistService:
             existing_record = db.session.query(WeeklyWatchlistResult).filter(
                 WeeklyWatchlistResult.symbol_id == result.symbol_id,
                 # 💡 FIX: اصلاح jentry_date به jdate (فیلد موجود در مدل شما)
-                WeeklyWatchlistResult.jdate == today_jdate, 
+                WeeklyWatchlistResult.jentry_date == today_jdate, 
                 WeeklyWatchlistResult.status == 'Open'
             ).first()
 
@@ -1116,7 +1116,7 @@ class WeeklyWatchlistService:
 
                     # 💥 FIX: استفاده از متغیر تعریف شده و فیلد صحیح (jdate)
                     entry_date=today_gregorian_date, 
-                    jdate=today_jdate, # <-- فیلد صحیح در مدل
+                    jentry_date=today_jdate, # <-- فیلد صحیح در مدل
                     status='Open', # تمام سیگنال‌های هفتگی باز تلقی می‌شوند
                     probability_percent=result.probability_percent
                 )
@@ -1304,7 +1304,7 @@ class WeeklyWatchlistService:
         query = query.order_by(
             WeeklyWatchlistResult.score.desc(),
             # 💡 FIX: اصلاح jentry_date به jdate (فیلد موجود در مدل شما)
-            WeeklyWatchlistResult.jdate.desc()
+            WeeklyWatchlistResult.jentry_date.desc()
         ).limit(limit)
 
         # --- Step 2: اجرای کوئری ---
@@ -1337,7 +1337,7 @@ class WeeklyWatchlistService:
                 "reason": r.reason,
                 "entry_price": r.entry_price,
                 # 💡 FIX: اصلاح jentry_date به jdate
-                "jentry_date": r.jdate, 
+                "jentry_date": r.jentry_date, 
                 "exit_price": r.exit_price,
                 "jexit_date": r.jexit_date,
                 "profit_loss_percentage": r.profit_loss_percentage,
